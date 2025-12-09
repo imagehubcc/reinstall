@@ -2442,6 +2442,7 @@ is_xda_gt_2t() {
 
 # 将大小字符串转换为 MiB
 # 支持格式: 20G, 20GB, 20480M, 20480MB, 20GiB, 20480MiB
+# 如果只有数字没有单位，默认使用 GB（更符合用户习惯）
 parse_size_to_mib() {
     local size_str=$1
     local size_num
@@ -2451,9 +2452,9 @@ parse_size_to_mib() {
     size_num=$(echo "$size_str" | sed 's/[^0-9]//g')
     size_unit=$(echo "$size_str" | sed 's/[0-9]//g' | tr '[:lower:]' '[:upper:]')
     
-    # 如果没有单位，默认使用 MiB
+    # 如果没有单位，默认使用 GB（更符合用户习惯，如 --root-size 22 表示 22GB）
     if [ -z "$size_unit" ]; then
-        size_unit="MIB"
+        size_unit="GB"
     fi
     
     # 转换为 MiB
@@ -2634,8 +2635,7 @@ create_part() {
         # 这几个系统不使用dd，而是复制文件
         if [ "$distro" = centos ] || [ "$distro" = almalinux ] || [ "$distro" = rocky ] ||
             [ "$distro" = oracle ] || [ "$distro" = redhat ] ||
-            [ "$distro" = anolis ] || [ "$distro" = opencloudos ] || [ "$distro" = openeuler ] ||
-            [ "$distro" = ubuntu ]; then
+            [ "$distro" = anolis ] || [ "$distro" = opencloudos ] || [ "$distro" = openeuler ]; then
             # 这里的 fs 没有用，最终使用目标系统的格式化工具
             fs=ext4
             if is_efi; then
@@ -2662,6 +2662,59 @@ create_part() {
                 echo                                  #1 bios_boot
                 echo                                  #2 os 用目标系统的格式化工具
                 mkfs.ext4 -F -L installer /dev/$xda*3 #3 installer
+            fi
+        elif [ "$distro" = ubuntu ]; then
+            # Ubuntu 云镜像模式也支持自定义分区
+            # 获取根分区大小（MiB）
+            root_size_mib=$(get_root_size_mib)
+            info "Root partition size: ${root_size_mib}MiB"
+            
+            # 这里的 fs 没有用，最终使用目标系统的格式化工具
+            fs=ext4
+            if is_efi; then
+                # efi
+                # 分区布局: EFI (1MiB-1025MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
+                boot_start=1025MiB
+                boot_end=3073MiB  # 1025 + 2048 = 3073 (2G)
+                root_start=3073MiB
+                root_end=$((3073 + root_size_mib))MiB
+                parted /dev/$xda -s -- \
+                    mklabel gpt \
+                    mkpart '" "' fat32 1MiB 1025MiB \
+                    mkpart '" "' ext4 $boot_start $boot_end \
+                    mkpart '" "' ext4 $root_start $root_end \
+                    mkpart '" "' ext4 $root_end -$installer_part_size \
+                    mkpart '" "' ext4 -$installer_part_size 100% \
+                    set 1 esp on
+                update_part
+
+                mkfs.fat -n efi /dev/$xda*1                      #1 efi
+                mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
+                echo                                             #3 / 用目标系统的格式化工具
+                mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
+                mkfs.ext4 -F -L installer /dev/$xda*5            #5 installer
+            else
+                # bios > 2t
+                # 分区布局: bios_grub (1MiB-2MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
+                boot_start=2MiB
+                boot_end=2050MiB  # 2 + 2048 = 2050 (2G)
+                root_start=2050MiB
+                root_end=$((2050 + root_size_mib))MiB
+                parted /dev/$xda -s -- \
+                    mklabel gpt \
+                    mkpart '" "' ext4 1MiB 2MiB \
+                    mkpart '" "' ext4 $boot_start $boot_end \
+                    mkpart '" "' ext4 $root_start $root_end \
+                    mkpart '" "' ext4 $root_end -$installer_part_size \
+                    mkpart '" "' ext4 -$installer_part_size 100% \
+                    set 1 bios_grub on
+                update_part
+
+                echo                                             #1 bios_boot
+                mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
+                echo                                             #3 / 用目标系统的格式化工具
+                mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
+                mkfs.ext4 -F -L installer /dev/$xda*5            #5 installer
             fi
         else
             # 使用 dd qcow2
