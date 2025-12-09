@@ -2475,9 +2475,11 @@ parse_size_to_mib() {
 get_root_size_mib() {
     local root_size_mib
     
-    # 如果指定了 extra_root_size，使用它
-    if [ -n "$extra_root_size" ]; then
-        root_size_mib=$(parse_size_to_mib "$extra_root_size")
+    # extract_env_from_cmdline 提取的是 root_size（去掉 extra_ 前缀）
+    # 如果指定了 root_size，使用它
+    if [ -n "$root_size" ]; then
+        root_size_mib=$(parse_size_to_mib "$root_size")
+        info "Using custom root size: ${root_size} = ${root_size_mib}MiB"
     else
         # 默认值：20GB (20480 MiB)
         # 如果磁盘太小，使用磁盘大小的 30%
