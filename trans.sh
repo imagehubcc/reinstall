@@ -2440,6 +2440,62 @@ is_xda_gt_2t() {
     [ "$disk_size" -gt "$disk_2t" ]
 }
 
+# 将大小字符串转换为 MiB
+# 支持格式: 20G, 20GB, 20480M, 20480MB, 20GiB, 20480MiB
+parse_size_to_mib() {
+    local size_str=$1
+    local size_num
+    local size_unit
+    
+    # 提取数字和单位
+    size_num=$(echo "$size_str" | sed 's/[^0-9]//g')
+    size_unit=$(echo "$size_str" | sed 's/[0-9]//g' | tr '[:lower:]' '[:upper:]')
+    
+    # 如果没有单位，默认使用 MiB
+    if [ -z "$size_unit" ]; then
+        size_unit="MIB"
+    fi
+    
+    # 转换为 MiB
+    case "$size_unit" in
+        G|GB|GIB)
+            echo $((size_num * 1024))
+            ;;
+        M|MB|MIB)
+            echo "$size_num"
+            ;;
+        *)
+            error_and_exit "Unsupported size unit: $size_unit. Use G, GB, GiB, M, MB, or MiB"
+            ;;
+    esac
+}
+
+# 获取根分区大小（MiB）
+get_root_size_mib() {
+    local root_size_mib
+    
+    # 如果指定了 extra_root_size，使用它
+    if [ -n "$extra_root_size" ]; then
+        root_size_mib=$(parse_size_to_mib "$extra_root_size")
+    else
+        # 默认值：20GB (20480 MiB)
+        # 如果磁盘太小，使用磁盘大小的 30%
+        disk_size=$(get_disk_size /dev/$xda)
+        disk_size_mib=$((disk_size / 1024 / 1024))
+        default_root_mib=20480  # 20GB
+        
+        # 如果默认值超过磁盘的 50%，则使用磁盘的 30%
+        if [ $default_root_mib -gt $((disk_size_mib * 50 / 100)) ]; then
+            root_size_mib=$((disk_size_mib * 30 / 100))
+            info "Disk too small, using 30% of disk size for root: ${root_size_mib}MiB"
+        else
+            root_size_mib=$default_root_mib
+        fi
+    fi
+    
+    echo "$root_size_mib"
+}
+
 create_part() {
     # 除了 dd 都会用到
     info "Create Part"
@@ -2678,43 +2734,88 @@ create_part() {
         ext4_opts="-O ^metadata_csum"
         apk add dosfstools
 
+        # 获取根分区大小（MiB）
+        if [ "$distro" = ubuntu ]; then
+            root_size_mib=$(get_root_size_mib)
+            info "Root partition size: ${root_size_mib}MiB"
+        fi
+
         if is_efi; then
             # efi
+            # 分区布局: EFI (1MiB-1025MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
+            boot_start=1025MiB
+            boot_end=3073MiB  # 1025 + 2048 = 3073 (2G)
+            root_start=3073MiB
+            if [ "$distro" = ubuntu ]; then
+                root_end=$((3073 + root_size_mib))MiB
+            else
+                root_end=105473MiB  # 3073 + 102400 = 105473 (100G) - 兼容旧逻辑
+            fi
             parted /dev/$xda -s -- \
                 mklabel gpt \
                 mkpart '" "' fat32 1MiB 1025MiB \
-                mkpart '" "' ext4 1025MiB -$installer_part_size \
+                mkpart '" "' ext4 $boot_start $boot_end \
+                mkpart '" "' ext4 $root_start $root_end \
+                mkpart '" "' ext4 $root_end -$installer_part_size \
                 mkpart '" "' ext4 -$installer_part_size 100% \
                 set 1 boot on
             update_part
 
             mkfs.fat -n efi /dev/$xda*1                      #1 efi
-            mkfs.ext4 -F -L os /dev/$xda*2                   #2 os
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*3 #2 installer
+            mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
+            mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
+            mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
+            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*5 #5 installer
         elif is_xda_gt_2t; then
             # bios > 2t
+            # 分区布局: bios_grub (1MiB-2MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
+            boot_start=2MiB
+            boot_end=2050MiB  # 2 + 2048 = 2050 (2G)
+            root_start=2050MiB
+            if [ "$distro" = ubuntu ]; then
+                root_end=$((2050 + root_size_mib))MiB
+            else
+                root_end=104450MiB  # 2050 + 102400 = 104450 (100G) - 兼容旧逻辑
+            fi
             parted /dev/$xda -s -- \
                 mklabel gpt \
                 mkpart '" "' ext4 1MiB 2MiB \
-                mkpart '" "' ext4 2MiB -$installer_part_size \
+                mkpart '" "' ext4 $boot_start $boot_end \
+                mkpart '" "' ext4 $root_start $root_end \
+                mkpart '" "' ext4 $root_end -$installer_part_size \
                 mkpart '" "' ext4 -$installer_part_size 100% \
                 set 1 bios_grub on
             update_part
 
             echo                                             #1 bios_boot
-            mkfs.ext4 -F -L os /dev/$xda*2                   #2 os
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*3 #3 installer
+            mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
+            mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
+            mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
+            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*5 #5 installer
         else
             # bios
+            # 分区布局: /boot (2G) + / (动态) + /data (剩余) + installer
+            boot_start=1MiB
+            boot_end=2049MiB  # 1 + 2048 = 2049 (2G)
+            root_start=2049MiB
+            if [ "$distro" = ubuntu ]; then
+                root_end=$((2049 + root_size_mib))MiB
+            else
+                root_end=104449MiB  # 2049 + 102400 = 104449 (100G) - 兼容旧逻辑
+            fi
             parted /dev/$xda -s -- \
                 mklabel msdos \
-                mkpart primary ext4 1MiB -$installer_part_size \
+                mkpart primary ext4 $boot_start $boot_end \
+                mkpart primary ext4 $root_start $root_end \
+                mkpart primary ext4 $root_end -$installer_part_size \
                 mkpart primary ext4 -$installer_part_size 100% \
                 set 1 boot on
             update_part
 
-            mkfs.ext4 -F -L os /dev/$xda*1                   #1 os
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*2 #2 installer
+            mkfs.ext4 -F -L boot /dev/$xda*1                 #1 /boot
+            mkfs.ext4 -F -L os /dev/$xda*2                   #2 /
+            mkfs.ext4 -F -L data /dev/$xda*3                 #3 /data
+            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*4 #4 installer
         fi
         update_part
     fi

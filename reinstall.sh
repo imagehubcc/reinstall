@@ -3,9 +3,9 @@
 # shellcheck disable=SC2086
 
 set -eE
-confhome=https://raw.githubusercontent.com/bin456789/reinstall/main
-confhome_cn=https://cnb.cool/bin456789/reinstall/-/git/raw/main
-# confhome_cn=https://www.ghproxy.cc/https://raw.githubusercontent.com/bin456789/reinstall/main
+confhome=https://raw.githubusercontent.com/imagehubcc/reinstall/main
+confhome_cn=https://cnb.cool/imagehubcc/reinstall/-/git/raw/main
+# confhome_cn=https://www.ghproxy.cc/https://raw.githubusercontent.com/imagehubcc/reinstall/main
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0004
@@ -3030,7 +3030,7 @@ build_extra_cmdline() {
     # https://salsa.debian.org/installer-team/rootskel/-/blob/master/src/lib/debian-installer-startup.d/S02module-params?ref_type=heads
     for key in confhome hold force_boot_mode force_cn force_old_windows_setup cloud_image main_disk \
         elts deb_mirror \
-        ssh_port rdp_port web_port allow_ping; do
+        ssh_port rdp_port web_port allow_ping root_size; do
         value=${!key}
         if [ -n "$value" ]; then
             is_need_quote "$value" &&
@@ -3899,7 +3899,8 @@ for o in ci installer debug minimal allow-ping force-cn help \
     commit: \
     frpc-conf: frpc-config: frpc-toml: \
     force-boot-mode: \
-    force-old-windows-setup:; do
+    force-old-windows-setup: \
+    root-size:; do
     [ -n "$long_opts" ] && long_opts+=,
     long_opts+=$o
 done
@@ -4066,6 +4067,12 @@ EOF
     --ssh-port)
         is_port_valid $2 || error_and_exit "Invalid $1 value: $2"
         ssh_port=$2
+        shift 2
+        ;;
+    --root-size)
+        [ -n "$2" ] || error_and_exit "Need value for $1"
+        # 支持格式: 20G, 20GB, 20480M, 20480MB 等
+        root_size=$2
         shift 2
         ;;
     --rdp-port)

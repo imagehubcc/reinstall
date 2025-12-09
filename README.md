@@ -148,6 +148,7 @@ certutil -urlcache -f -split https://cnb.cool/bin456789/reinstall/-/git/raw/main
 - 用户名为 `root`，脚本会提示输入密码，不输入则使用随机密码
 - 安装最新版可不输入版本号
 - 最大化利用磁盘空间：不含 boot 分区（Fedora 例外），不含 swap 分区
+- **Ubuntu 支持自定义分区**：自动创建 `/boot` (2GB)、`/` (100GB)、`/data` (剩余空间) 三个分区
 - 自动根据机器类型选择不同的优化内核，例如 `Cloud`、`HWE` 内核
 - 安装 Red Hat 时需填写 <https://access.redhat.com/downloads/content/rhel> 得到的 `qcow2` 镜像链接，也可以安装其它类 RHEL 系统，例如 `Alibaba Cloud Linux` 和 `TencentOS Server`
 - 重装后如需修改 SSH 端口或者改成密钥登录，注意还要修改 `/etc/ssh/sshd_config.d/` 里面的文件
@@ -180,6 +181,7 @@ bash reinstall.sh anolis      7|8|23
 - `--ssh-key KEY` 设置 SSH 登录公钥，[格式如下](#--ssh-key)。当使用公钥时，密码为空
 - `--ssh-port PORT` 修改 SSH 端口（安装期间观察日志用，也作用于新系统）
 - `--web-port PORT` 修改 Web 端口（安装期间观察日志用）
+- `--root-size SIZE` 设置 Ubuntu 根分区大小（仅限 Ubuntu），支持格式：`20G`、`20GB`、`20480M`、`20480MB`、`20GiB`、`20480MiB`。不指定时默认 20GB，如果磁盘空间不足则自动使用磁盘的 30%
 - `--frpc-toml PATH` 添加 frpc 内网穿透，参数填本地路径或 HTTP 链接
 - `--hold 1` 仅重启到安装环境，不运行安装，用于 SSH 登录验证网络连通性
 - `--hold 2` 安装结束后不重启，用于 SSH 登录修改系统内容，Debian/Kali 会挂载在 `/target`，其它系统会挂载在 `/os`
@@ -191,6 +193,22 @@ bash reinstall.sh anolis      7|8|23
 > 即使安装过程出错，也能连接 SSH 手动救砖。
 >
 > 目标系统非 Debian/Kali 时，可以运行 `/trans.sh alpine` 自动救砖成 Alpine 系统。
+
+#### Ubuntu 自定义分区
+
+安装 Ubuntu 时，脚本会自动创建以下分区布局：
+
+- **`/boot` 分区**：2GB，用于存放内核和引导文件
+- **`/` 根分区**：默认 20GB，可通过 `--root-size` 参数自定义（如 `--root-size 20G`）
+- **`/data` 分区**：剩余所有磁盘空间，用于数据存储
+
+> [!NOTE]
+>
+> - 此功能仅适用于 Ubuntu 系统安装
+> - 根分区大小可通过 `--root-size` 参数自定义，例如：`bash reinstall.sh ubuntu 22.04 --root-size 20G`
+> - 如果不指定 `--root-size`，默认使用 20GB；如果磁盘空间不足（默认值超过磁盘的 50%），则自动使用磁盘的 30%
+> - 磁盘总空间需要至少：2GB (boot) + 根分区大小 + installer 分区大小（通常 3-4GB）
+> - 支持 EFI、BIOS > 2T、BIOS 三种引导模式
 
 <details>
 
@@ -579,9 +597,12 @@ bash reinstall.sh ...
 
 ## 如何修改脚本自用
 
-1. Fork 本仓库
-2. 修改 `reinstall.sh` 和 `reinstall.bat` 开头的 `confhome` 和 `confhome_cn`
-3. 修改其它代码
+1. Fork 本仓库或创建新仓库
+2. 修改 `reinstall.sh` 和 `reinstall.bat` 开头的 `confhome` 和 `confhome_cn`，指向你的仓库地址
+   - `confhome=https://raw.githubusercontent.com/你的用户名/仓库名/main`
+   - `confhome_cn=https://cnb.cool/你的用户名/仓库名/-/git/raw/main`
+3. 上传修改后的文件到仓库（至少需要上传 `trans.sh`、`ubuntu-storage-early.sh`、`reinstall.sh`、`reinstall.bat` 等）
+4. 修改其它代码（如自定义分区大小等）
 
 ## 感谢
 
