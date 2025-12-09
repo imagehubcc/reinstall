@@ -5239,6 +5239,9 @@ EOF
 
     # 取消挂载硬盘
     info "Unmounting disk"
+    # 先卸载伪文件系统（如果有）
+    umount_pseudo_fs /os/ 2>/dev/null || true
+    # 卸载子挂载点
     if is_efi; then
         umount /os/boot/efi/ 2>/dev/null || true
     fi
@@ -5246,7 +5249,8 @@ EOF
     if [ -e /dev/disk/by-label/boot ] && [ -e /dev/disk/by-label/data ]; then
         umount /os/boot/ 2>/dev/null || true
     fi
-    umount /os/
+    # 使用递归卸载确保所有子挂载点都被卸载
+    umount -R /os/ 2>/dev/null || umount /os/ 2>/dev/null || true
     umount /installer/
 
     # 如果镜像有独立的efi分区（包括efi+boot在同一个分区），复制其uuid
