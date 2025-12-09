@@ -5010,6 +5010,14 @@ EOF
             fi
         fi
 
+        # 安装 GRUB 到引导设备
+        if is_efi; then
+            chroot $os_dir grub-install --efi-directory=/boot/efi
+            chroot $os_dir grub-install --efi-directory=/boot/efi --removable
+        else
+            chroot $os_dir grub-install /dev/$xda
+        fi
+
         # 要重新生成 grub.cfg，因为
         # 1 我们删除了 boot 分区（非自定义分区模式）
         # 2 改动了 /etc/default/grub.d/40-force-partuuid.cfg
@@ -5019,6 +5027,15 @@ EOF
         mv $os_dir/etc/default/grub.orig $os_dir/etc/default/grub
 
         # fstab
+        # 更新根分区 UUID（确保与实际分区 UUID 匹配）
+        root_uuid=$(lsblk -rno UUID /dev/$xda*$root_part_num)
+        # 更新 fstab 中根分区的 UUID
+        sed -i "s|^UUID=[0-9a-f-]*[[:space:]]*/[[:space:]]|UUID=$root_uuid / |" $os_dir/etc/fstab
+        # 如果 fstab 中没有根分区条目，添加一个
+        if ! grep -q "^UUID=$root_uuid[[:space:]]*/[[:space:]]" $os_dir/etc/fstab; then
+            echo "UUID=$root_uuid / ext4 defaults 0 1" >>$os_dir/etc/fstab
+        fi
+        
         # 如果有自定义分区，添加 /boot 和 /data 挂载点
         if [ "$has_custom_part" = true ]; then
             # 删除原有的 /boot 条目（如果有）
