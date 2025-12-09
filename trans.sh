@@ -5240,7 +5240,7 @@ EOF
     # 取消挂载硬盘
     info "Unmounting disk"
     if is_efi; then
-        umount /os/boot/efi/
+        umount /os/boot/efi/ 2>/dev/null || true
     fi
     # 如果有自定义分区，先卸载 boot 分区
     if [ -e /dev/disk/by-label/boot ] && [ -e /dev/disk/by-label/data ]; then
