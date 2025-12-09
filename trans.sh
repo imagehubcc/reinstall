@@ -2690,7 +2690,8 @@ create_part() {
 
                 mkfs.fat -n efi /dev/$xda*1                      #1 efi
                 mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
-                echo                                             #3 / 用目标系统的格式化工具
+                # 根分区先用 alpine 格式化，后续会用目标系统重新格式化
+                mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
                 mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
                 mkfs.ext4 -F -L installer /dev/$xda*5            #5 installer
             else
@@ -2712,7 +2713,8 @@ create_part() {
 
                 echo                                             #1 bios_boot
                 mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
-                echo                                             #3 / 用目标系统的格式化工具
+                # 根分区先用 alpine 格式化，后续会用目标系统重新格式化
+                mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
                 mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
                 mkfs.ext4 -F -L installer /dev/$xda*5            #5 installer
             fi
@@ -4961,15 +4963,30 @@ EOF
             fi
         fi
 
+        # 检测是否有自定义分区
+        has_custom_part=false
+        root_part_num=2
+        boot_part_num=2
+        if [ -e /dev/disk/by-label/boot ] && [ -e /dev/disk/by-label/data ]; then
+            has_custom_part=true
+            root_part_num=3
+            boot_part_num=2
+        fi
+
         # 更改 efi 目录的 grub.cfg 写死的 fsuuid
-        # 因为 24.04 fsuuid 对应 boot 分区
+        # 如果有自定义分区，fsuuid 对应根分区；否则对应 boot 分区（24.04）
         efi_grub_cfg=$os_dir/boot/efi/EFI/ubuntu/grub.cfg
         if is_efi; then
-            os_uuid=$(lsblk -rno UUID /dev/$xda*2)
+            if [ "$has_custom_part" = true ]; then
+                os_uuid=$(lsblk -rno UUID /dev/$xda*$root_part_num)
+            else
+                os_uuid=$(lsblk -rno UUID /dev/$xda*2)
+            fi
             sed -Ei "s|[0-9a-f-]{36}|$os_uuid|i" $efi_grub_cfg
 
             # 24.04 移除 boot 分区后，需要添加 /boot 路径
-            if grep "'/grub'" $efi_grub_cfg; then
+            # 如果有自定义分区，boot 是独立分区，不需要添加路径
+            if [ "$has_custom_part" != true ] && grep "'/grub'" $efi_grub_cfg; then
                 sed -i "s|'/grub'|'/boot/grub'|" $efi_grub_cfg
             fi
         fi
@@ -4979,7 +4996,11 @@ EOF
         if [ -e $force_partuuid_cfg ]; then
             if is_virt; then
                 # 更改写死的 partuuid
-                os_part_uuid=$(lsblk -rno PARTUUID /dev/$xda*2)
+                if [ "$has_custom_part" = true ]; then
+                    os_part_uuid=$(lsblk -rno PARTUUID /dev/$xda*$root_part_num)
+                else
+                    os_part_uuid=$(lsblk -rno PARTUUID /dev/$xda*2)
+                fi
                 sed -i "s/^GRUB_FORCE_PARTUUID=.*/GRUB_FORCE_PARTUUID=$os_part_uuid/" $force_partuuid_cfg
             else
                 # 独服不应该使用 initrdless boot
@@ -4988,7 +5009,7 @@ EOF
         fi
 
         # 要重新生成 grub.cfg，因为
-        # 1 我们删除了 boot 分区
+        # 1 我们删除了 boot 分区（非自定义分区模式）
         # 2 改动了 /etc/default/grub.d/40-force-partuuid.cfg
         chroot $os_dir update-grub
 
@@ -4996,8 +5017,20 @@ EOF
         mv $os_dir/etc/default/grub.orig $os_dir/etc/default/grub
 
         # fstab
-        # 24.04 镜像有boot分区，但我们不需要
-        sed -i '/[[:space:]]\/boot[[:space:]]/d' $os_dir/etc/fstab
+        # 如果有自定义分区，添加 /boot 和 /data 挂载点
+        if [ "$has_custom_part" = true ]; then
+            # 删除原有的 /boot 条目（如果有）
+            sed -i '/[[:space:]]\/boot[[:space:]]/d' $os_dir/etc/fstab
+            # 添加 /boot 分区挂载
+            boot_uuid=$(lsblk -rno UUID /dev/$xda*2)
+            echo "UUID=$boot_uuid /boot ext4 defaults 0 2" >>$os_dir/etc/fstab
+            # 添加 /data 分区挂载
+            data_uuid=$(lsblk -rno UUID /dev/$xda*4)
+            echo "UUID=$data_uuid /data ext4 defaults 0 2" >>$os_dir/etc/fstab
+        else
+            # 如果没有自定义分区，删除 /boot 条目（24.04 镜像有boot分区，但我们不需要）
+            sed -i '/[[:space:]]\/boot[[:space:]]/d' $os_dir/etc/fstab
+        fi
         if ! is_efi; then
             # bios 删除 efi 条目
             sed -i '/[[:space:]]\/boot\/efi[[:space:]]/d' $os_dir/etc/fstab
@@ -5125,13 +5158,23 @@ EOF
 
     mkdir -p /nbd /nbd-boot /nbd-efi
 
+    # 检测是否有自定义分区（Ubuntu 的 boot 和 data 分区）
+    has_custom_part=false
+    root_part_num=2
+    if [ "$distro" = ubuntu ] && [ -e /dev/disk/by-label/boot ] && [ -e /dev/disk/by-label/data ]; then
+        has_custom_part=true
+        # 自定义分区布局: bios_grub/boot(1) + boot(2) + root(3) + data(4) + installer(5)
+        # 或者: efi(1) + boot(2) + root(3) + data(4) + installer(5)
+        root_part_num=3
+    fi
+
     # 使用目标系统的格式化程序
     # centos8 如果用alpine格式化xfs，grub2-mkconfig和grub2里面都无法识别xfs分区
     mount_nouuid /dev/$os_part /nbd/
     mount_pseudo_fs /nbd/
     case "$os_part_fstype" in
-    ext4) chroot /nbd mkfs.ext4 -F -L "$os_part_label" -U "$os_part_uuid" /dev/$xda*2 ;;
-    xfs) chroot /nbd mkfs.xfs -f -L "$os_part_label" -m uuid=$os_part_uuid /dev/$xda*2 ;;
+    ext4) chroot /nbd mkfs.ext4 -F -L "$os_part_label" -U "$os_part_uuid" /dev/$xda*$root_part_num ;;
+    xfs) chroot /nbd mkfs.xfs -f -L "$os_part_label" -m uuid=$os_part_uuid /dev/$xda*$root_part_num ;;
     esac
     umount -R /nbd/
 
@@ -5139,7 +5182,7 @@ EOF
 
     # 创建并挂载 /os
     mkdir -p /os
-    mount -o noatime /dev/$xda*2 /os/
+    mount -o noatime /dev/$xda*$root_part_num /os/
 
     # 如果是 efi 则创建 /os/boot/efi
     # 如果镜像有 efi 分区也创建 /os/boot/efi，用于复制 efi 分区的文件
@@ -5152,6 +5195,12 @@ EOF
         if is_efi; then
             mount -o $efi_mount_opts /dev/$xda*1 /os/boot/efi/
         fi
+    fi
+
+    # 如果有自定义分区，需要挂载 boot 分区
+    if [ "$has_custom_part" = true ]; then
+        mkdir -p /os/boot
+        mount -o noatime /dev/$xda*2 /os/boot/
     fi
 
     # 复制系统分区
@@ -5191,6 +5240,10 @@ EOF
     if is_efi; then
         umount /os/boot/efi/
     fi
+    # 如果有自定义分区，先卸载 boot 分区
+    if [ -e /dev/disk/by-label/boot ] && [ -e /dev/disk/by-label/data ]; then
+        umount /os/boot/ 2>/dev/null || true
+    fi
     umount /os/
     umount /installer/
 
@@ -5209,15 +5262,33 @@ EOF
     # 删除 installer 分区并扩容
     info "Delete installer partition"
     apk add parted
-    parted /dev/$xda -s -- rm 3
+    # 检测是否有自定义分区，确定 installer 分区的编号
+    installer_part_num=3
+    if [ "$distro" = ubuntu ] && [ -e /dev/disk/by-label/boot ] && [ -e /dev/disk/by-label/data ]; then
+        # 自定义分区布局: bios_grub/efi(1) + boot(2) + root(3) + data(4) + installer(5)
+        installer_part_num=5
+    fi
+    parted /dev/$xda -s -- rm $installer_part_num
     update_part
     resize_after_install_cloud_image
 
     # 重新挂载 /os /boot/efi
     info "Re-mount disk"
-    mount -o noatime /dev/$xda*2 /os/
+    # 检测是否有自定义分区
+    has_custom_part=false
+    root_part_num=2
+    if [ "$distro" = ubuntu ] && [ -e /dev/disk/by-label/boot ] && [ -e /dev/disk/by-label/data ]; then
+        has_custom_part=true
+        root_part_num=3
+    fi
+    mount -o noatime /dev/$xda*$root_part_num /os/
     if is_efi; then
         mount -o $efi_mount_opts /dev/$xda*1 /os/boot/efi/
+    fi
+    # 如果有自定义分区，挂载 boot 分区
+    if [ "$has_custom_part" = true ]; then
+        mkdir -p /os/boot
+        mount -o noatime /dev/$xda*2 /os/boot/
     fi
 
     # 创建 swap
