@@ -5012,8 +5012,57 @@ EOF
 
         # 安装 GRUB 到引导设备
         if is_efi; then
-            chroot $os_dir grub-install --efi-directory=/boot/efi
-            chroot $os_dir grub-install --efi-directory=/boot/efi --removable
+            # 确保 /boot/efi 目录存在
+            mkdir -p $os_dir/boot/efi
+            
+            # 获取 EFI 分区设备（支持 nvme 等设备）
+            efi_dev=$(ls /dev/$xda*1 2>/dev/null | head -1)
+            if [ -z "$efi_dev" ]; then
+                error_and_exit "Cannot find EFI partition /dev/$xda*1"
+            fi
+            
+            # 检查是否已挂载
+            if ! mountpoint -q $os_dir/boot/efi 2>/dev/null; then
+                # 检查分区格式
+                efi_fstype=$(lsblk -no FSTYPE "$efi_dev" 2>/dev/null || echo "")
+                if [ -z "$efi_fstype" ] || { [ "$efi_fstype" != "vfat" ] && [ "$efi_fstype" != "fat32" ] && [ "$efi_fstype" != "msdos" ]; }; then
+                    warn "EFI partition $efi_dev has incorrect or missing filesystem type: '$efi_fstype', reformatting as FAT32"
+                    apk add dosfstools
+                    mkfs.fat -F 32 -n EFI "$efi_dev"
+                fi
+                
+                # 尝试挂载 EFI 分区
+                info "Mounting EFI partition $efi_dev to $os_dir/boot/efi"
+                if ! mount -o $efi_mount_opts "$efi_dev" $os_dir/boot/efi/; then
+                    error_and_exit "Failed to mount EFI partition $efi_dev to $os_dir/boot/efi. Please check if the partition is properly formatted."
+                fi
+                info "Successfully mounted EFI partition at /boot/efi"
+            else
+                info "EFI partition already mounted at /boot/efi"
+            fi
+            
+            # 验证挂载点是否可访问并创建必要的目录
+            if [ ! -d "$os_dir/boot/efi/EFI" ]; then
+                mkdir -p $os_dir/boot/efi/EFI
+            fi
+            
+            # 验证 EFI 分区是否可写
+            if ! touch "$os_dir/boot/efi/.grub_install_test" 2>/dev/null; then
+                error_and_exit "EFI partition at $os_dir/boot/efi is not writable"
+            fi
+            rm -f "$os_dir/boot/efi/.grub_install_test"
+            
+            # 执行 grub-install
+            info "Installing GRUB to EFI partition..."
+            if chroot $os_dir grub-install --efi-directory=/boot/efi; then
+                info "GRUB installed successfully to EFI partition"
+            else
+                error_and_exit "grub-install failed. Please check: 1) EFI partition is properly formatted as FAT32, 2) EFI partition is mounted at /boot/efi, 3) /sys/firmware/efi is accessible in chroot."
+            fi
+            
+            # 安装可移动引导项（fallback）
+            info "Installing removable GRUB entry..."
+            chroot $os_dir grub-install --efi-directory=/boot/efi --removable || warn "Failed to install removable GRUB entry, continuing..."
         else
             chroot $os_dir grub-install /dev/$xda
         fi
