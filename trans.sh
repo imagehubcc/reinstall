@@ -2472,6 +2472,7 @@ parse_size_to_mib() {
 }
 
 # 获取根分区大小（MiB）
+# 返回值：如果指定了root_size，返回具体数值；否则返回"full"表示使用全部空间
 get_root_size_mib() {
     local root_size_mib
     
@@ -2480,23 +2481,12 @@ get_root_size_mib() {
     if [ -n "$root_size" ]; then
         root_size_mib=$(parse_size_to_mib "$root_size")
         info "Using custom root size: ${root_size} = ${root_size_mib}MiB"
+        echo "$root_size_mib"
     else
-        # 默认值：20GB (20480 MiB)
-        # 如果磁盘太小，使用磁盘大小的 30%
-        disk_size=$(get_disk_size /dev/$xda)
-        disk_size_mib=$((disk_size / 1024 / 1024))
-        default_root_mib=20480  # 20GB
-        
-        # 如果默认值超过磁盘的 50%，则使用磁盘的 30%
-        if [ $default_root_mib -gt $((disk_size_mib * 50 / 100)) ]; then
-            root_size_mib=$((disk_size_mib * 30 / 100))
-            info "Disk too small, using 30% of disk size for root: ${root_size_mib}MiB"
-        else
-            root_size_mib=$default_root_mib
-        fi
+        # 默认不指定root_size时，使用全部空间（返回"full"）
+        info "No root size specified, will use full disk space for root partition"
+        echo "full"
     fi
-    
-    echo "$root_size_mib"
 }
 
 create_part() {
@@ -2666,59 +2656,98 @@ create_part() {
                 mkfs.ext4 -F -L installer /dev/$xda*3 #3 installer
             fi
         elif [ "$distro" = ubuntu ]; then
-            # Ubuntu 云镜像模式也支持自定义分区
+            # Ubuntu 云镜像模式
             # 获取根分区大小（MiB）
             root_size_mib=$(get_root_size_mib)
-            info "Root partition size: ${root_size_mib}MiB"
+            
+            # 判断是否使用自定义分区（指定了root_size）还是简单分区（使用全部空间）
+            use_custom_part=false
+            if [ "$root_size_mib" != "full" ]; then
+                use_custom_part=true
+                info "Using custom partition layout with root size: ${root_size_mib}MiB"
+            else
+                info "Using simple partition layout (full disk for root)"
+            fi
             
             # 这里的 fs 没有用，最终使用目标系统的格式化工具
             fs=ext4
             if is_efi; then
-                # efi
-                # 分区布局: EFI (1MiB-1025MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
-                boot_start=1025MiB
-                boot_end=3073MiB  # 1025 + 2048 = 3073 (2G)
-                root_start=3073MiB
-                root_end=$((3073 + root_size_mib))MiB
-                parted /dev/$xda -s -- \
-                    mklabel gpt \
-                    mkpart '" "' fat32 1MiB 1025MiB \
-                    mkpart '" "' ext4 $boot_start $boot_end \
-                    mkpart '" "' ext4 $root_start $root_end \
-                    mkpart '" "' ext4 $root_end -$installer_part_size \
-                    mkpart '" "' ext4 -$installer_part_size 100% \
-                    set 1 esp on
-                update_part
+                if [ "$use_custom_part" = true ]; then
+                    # 自定义分区布局: EFI (1MiB-1025MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
+                    boot_start=1025MiB
+                    boot_end=3073MiB  # 1025 + 2048 = 3073 (2G)
+                    root_start=3073MiB
+                    root_end=$((3073 + root_size_mib))MiB
+                    parted /dev/$xda -s -- \
+                        mklabel gpt \
+                        mkpart '" "' fat32 1MiB 1025MiB \
+                        mkpart '" "' ext4 $boot_start $boot_end \
+                        mkpart '" "' ext4 $root_start $root_end \
+                        mkpart '" "' ext4 $root_end -$installer_part_size \
+                        mkpart '" "' ext4 -$installer_part_size 100% \
+                        set 1 esp on
+                    update_part
 
-                mkfs.fat -n efi /dev/$xda*1                      #1 efi
-                mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
-                # 根分区先用 alpine 格式化，后续会用目标系统重新格式化
-                mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
-                mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
-                mkfs.ext4 -F -L installer /dev/$xda*5            #5 installer
+                    mkfs.fat -n efi /dev/$xda*1                      #1 efi
+                    mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
+                    # 根分区先用 alpine 格式化，后续会用目标系统重新格式化
+                    mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
+                    mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
+                    mkfs.ext4 -F -L installer /dev/$xda*5            #5 installer
+                else
+                    # 简单分区布局: EFI (1MiB-1025MiB) + / (剩余) + installer
+                    parted /dev/$xda -s -- \
+                        mklabel gpt \
+                        mkpart '" "' fat32 1MiB 1025MiB \
+                        mkpart '" "' ext4 1025MiB -$installer_part_size \
+                        mkpart '" "' ext4 -$installer_part_size 100% \
+                        set 1 esp on
+                    update_part
+
+                    mkfs.fat -n efi /dev/$xda*1                      #1 efi
+                    # 根分区先用 alpine 格式化，后续会用目标系统重新格式化
+                    mkfs.ext4 -F -L os /dev/$xda*2                   #2 /
+                    mkfs.ext4 -F -L installer /dev/$xda*3            #3 installer
+                fi
             else
                 # bios > 2t
-                # 分区布局: bios_grub (1MiB-2MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
-                boot_start=2MiB
-                boot_end=2050MiB  # 2 + 2048 = 2050 (2G)
-                root_start=2050MiB
-                root_end=$((2050 + root_size_mib))MiB
-                parted /dev/$xda -s -- \
-                    mklabel gpt \
-                    mkpart '" "' ext4 1MiB 2MiB \
-                    mkpart '" "' ext4 $boot_start $boot_end \
-                    mkpart '" "' ext4 $root_start $root_end \
-                    mkpart '" "' ext4 $root_end -$installer_part_size \
-                    mkpart '" "' ext4 -$installer_part_size 100% \
-                    set 1 bios_grub on
-                update_part
+                if [ "$use_custom_part" = true ]; then
+                    # 自定义分区布局: bios_grub (1MiB-2MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
+                    boot_start=2MiB
+                    boot_end=2050MiB  # 2 + 2048 = 2050 (2G)
+                    root_start=2050MiB
+                    root_end=$((2050 + root_size_mib))MiB
+                    parted /dev/$xda -s -- \
+                        mklabel gpt \
+                        mkpart '" "' ext4 1MiB 2MiB \
+                        mkpart '" "' ext4 $boot_start $boot_end \
+                        mkpart '" "' ext4 $root_start $root_end \
+                        mkpart '" "' ext4 $root_end -$installer_part_size \
+                        mkpart '" "' ext4 -$installer_part_size 100% \
+                        set 1 bios_grub on
+                    update_part
 
-                echo                                             #1 bios_boot
-                mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
-                # 根分区先用 alpine 格式化，后续会用目标系统重新格式化
-                mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
-                mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
-                mkfs.ext4 -F -L installer /dev/$xda*5            #5 installer
+                    echo                                             #1 bios_boot
+                    mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
+                    # 根分区先用 alpine 格式化，后续会用目标系统重新格式化
+                    mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
+                    mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
+                    mkfs.ext4 -F -L installer /dev/$xda*5            #5 installer
+                else
+                    # 简单分区布局: bios_grub (1MiB-2MiB) + / (剩余) + installer
+                    parted /dev/$xda -s -- \
+                        mklabel gpt \
+                        mkpart '" "' ext4 1MiB 2MiB \
+                        mkpart '" "' ext4 2MiB -$installer_part_size \
+                        mkpart '" "' ext4 -$installer_part_size 100% \
+                        set 1 bios_grub on
+                    update_part
+
+                    echo                                             #1 bios_boot
+                    # 根分区先用 alpine 格式化，后续会用目标系统重新格式化
+                    mkfs.ext4 -F -L os /dev/$xda*2                   #2 /
+                    mkfs.ext4 -F -L installer /dev/$xda*3            #3 installer
+                fi
             fi
         else
             # 使用 dd qcow2
@@ -2792,87 +2821,136 @@ create_part() {
         apk add dosfstools
 
         # 获取根分区大小（MiB）
+        ubuntu_use_custom_part=false
         if [ "$distro" = ubuntu ]; then
             root_size_mib=$(get_root_size_mib)
-            info "Root partition size: ${root_size_mib}MiB"
+            if [ "$root_size_mib" != "full" ]; then
+                ubuntu_use_custom_part=true
+                info "Root partition size: ${root_size_mib}MiB (custom partition layout)"
+            else
+                info "Using simple partition layout (full disk for root)"
+            fi
         fi
 
         if is_efi; then
             # efi
-            # 分区布局: EFI (1MiB-1025MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
-            boot_start=1025MiB
-            boot_end=3073MiB  # 1025 + 2048 = 3073 (2G)
-            root_start=3073MiB
-            if [ "$distro" = ubuntu ]; then
-                root_end=$((3073 + root_size_mib))MiB
-            else
-                root_end=105473MiB  # 3073 + 102400 = 105473 (100G) - 兼容旧逻辑
-            fi
-            parted /dev/$xda -s -- \
-                mklabel gpt \
-                mkpart '" "' fat32 1MiB 1025MiB \
-                mkpart '" "' ext4 $boot_start $boot_end \
-                mkpart '" "' ext4 $root_start $root_end \
-                mkpart '" "' ext4 $root_end -$installer_part_size \
-                mkpart '" "' ext4 -$installer_part_size 100% \
-                set 1 esp on
-            update_part
+            if [ "$distro" = ubuntu ] && [ "$ubuntu_use_custom_part" = false ]; then
+                # 简单分区布局: EFI (1MiB-1025MiB) + / (剩余) + installer
+                parted /dev/$xda -s -- \
+                    mklabel gpt \
+                    mkpart '" "' fat32 1MiB 1025MiB \
+                    mkpart '" "' ext4 1025MiB -$installer_part_size \
+                    mkpart '" "' ext4 -$installer_part_size 100% \
+                    set 1 esp on
+                update_part
 
-            mkfs.fat -n efi /dev/$xda*1                      #1 efi
-            mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
-            mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
-            mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*5 #5 installer
+                mkfs.fat -n efi /dev/$xda*1                      #1 efi
+                mkfs.ext4 -F -L os /dev/$xda*2                   #2 /
+                mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*3 #3 installer
+            else
+                # 自定义分区布局: EFI (1MiB-1025MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
+                boot_start=1025MiB
+                boot_end=3073MiB  # 1025 + 2048 = 3073 (2G)
+                root_start=3073MiB
+                if [ "$distro" = ubuntu ] && [ "$ubuntu_use_custom_part" = true ]; then
+                    root_end=$((3073 + root_size_mib))MiB
+                else
+                    root_end=105473MiB  # 3073 + 102400 = 105473 (100G) - 兼容旧逻辑
+                fi
+                parted /dev/$xda -s -- \
+                    mklabel gpt \
+                    mkpart '" "' fat32 1MiB 1025MiB \
+                    mkpart '" "' ext4 $boot_start $boot_end \
+                    mkpart '" "' ext4 $root_start $root_end \
+                    mkpart '" "' ext4 $root_end -$installer_part_size \
+                    mkpart '" "' ext4 -$installer_part_size 100% \
+                    set 1 esp on
+                update_part
+
+                mkfs.fat -n efi /dev/$xda*1                      #1 efi
+                mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
+                mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
+                mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
+                mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*5 #5 installer
+            fi
         elif is_xda_gt_2t; then
             # bios > 2t
-            # 分区布局: bios_grub (1MiB-2MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
-            boot_start=2MiB
-            boot_end=2050MiB  # 2 + 2048 = 2050 (2G)
-            root_start=2050MiB
-            if [ "$distro" = ubuntu ]; then
-                root_end=$((2050 + root_size_mib))MiB
-            else
-                root_end=104450MiB  # 2050 + 102400 = 104450 (100G) - 兼容旧逻辑
-            fi
-            parted /dev/$xda -s -- \
-                mklabel gpt \
-                mkpart '" "' ext4 1MiB 2MiB \
-                mkpart '" "' ext4 $boot_start $boot_end \
-                mkpart '" "' ext4 $root_start $root_end \
-                mkpart '" "' ext4 $root_end -$installer_part_size \
-                mkpart '" "' ext4 -$installer_part_size 100% \
-                set 1 bios_grub on
-            update_part
+            if [ "$distro" = ubuntu ] && [ "$ubuntu_use_custom_part" = false ]; then
+                # 简单分区布局: bios_grub (1MiB-2MiB) + / (剩余) + installer
+                parted /dev/$xda -s -- \
+                    mklabel gpt \
+                    mkpart '" "' ext4 1MiB 2MiB \
+                    mkpart '" "' ext4 2MiB -$installer_part_size \
+                    mkpart '" "' ext4 -$installer_part_size 100% \
+                    set 1 bios_grub on
+                update_part
 
-            echo                                             #1 bios_boot
-            mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
-            mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
-            mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*5 #5 installer
+                echo                                             #1 bios_boot
+                mkfs.ext4 -F -L os /dev/$xda*2                   #2 /
+                mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*3 #3 installer
+            else
+                # 自定义分区布局: bios_grub (1MiB-2MiB) + /boot (2G) + / (动态) + /data (剩余) + installer
+                boot_start=2MiB
+                boot_end=2050MiB  # 2 + 2048 = 2050 (2G)
+                root_start=2050MiB
+                if [ "$distro" = ubuntu ] && [ "$ubuntu_use_custom_part" = true ]; then
+                    root_end=$((2050 + root_size_mib))MiB
+                else
+                    root_end=104450MiB  # 2050 + 102400 = 104450 (100G) - 兼容旧逻辑
+                fi
+                parted /dev/$xda -s -- \
+                    mklabel gpt \
+                    mkpart '" "' ext4 1MiB 2MiB \
+                    mkpart '" "' ext4 $boot_start $boot_end \
+                    mkpart '" "' ext4 $root_start $root_end \
+                    mkpart '" "' ext4 $root_end -$installer_part_size \
+                    mkpart '" "' ext4 -$installer_part_size 100% \
+                    set 1 bios_grub on
+                update_part
+
+                echo                                             #1 bios_boot
+                mkfs.ext4 -F -L boot /dev/$xda*2                 #2 /boot
+                mkfs.ext4 -F -L os /dev/$xda*3                   #3 /
+                mkfs.ext4 -F -L data /dev/$xda*4                 #4 /data
+                mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*5 #5 installer
+            fi
         else
             # bios
-            # 分区布局: /boot (2G) + / (动态) + /data (剩余) + installer
-            boot_start=1MiB
-            boot_end=2049MiB  # 1 + 2048 = 2049 (2G)
-            root_start=2049MiB
-            if [ "$distro" = ubuntu ]; then
-                root_end=$((2049 + root_size_mib))MiB
-            else
-                root_end=104449MiB  # 2049 + 102400 = 104449 (100G) - 兼容旧逻辑
-            fi
-            parted /dev/$xda -s -- \
-                mklabel msdos \
-                mkpart primary ext4 $boot_start $boot_end \
-                mkpart primary ext4 $root_start $root_end \
-                mkpart primary ext4 $root_end -$installer_part_size \
-                mkpart primary ext4 -$installer_part_size 100% \
-                set 1 boot on
-            update_part
+            if [ "$distro" = ubuntu ] && [ "$ubuntu_use_custom_part" = false ]; then
+                # 简单分区布局: / (剩余) + installer
+                parted /dev/$xda -s -- \
+                    mklabel msdos \
+                    mkpart primary ext4 1MiB -$installer_part_size \
+                    mkpart primary ext4 -$installer_part_size 100% \
+                    set 1 boot on
+                update_part
 
-            mkfs.ext4 -F -L boot /dev/$xda*1                 #1 /boot
-            mkfs.ext4 -F -L os /dev/$xda*2                   #2 /
-            mkfs.ext4 -F -L data /dev/$xda*3                 #3 /data
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*4 #4 installer
+                mkfs.ext4 -F -L os /dev/$xda*1                   #1 /
+                mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*2 #2 installer
+            else
+                # 自定义分区布局: /boot (2G) + / (动态) + /data (剩余) + installer
+                boot_start=1MiB
+                boot_end=2049MiB  # 1 + 2048 = 2049 (2G)
+                root_start=2049MiB
+                if [ "$distro" = ubuntu ] && [ "$ubuntu_use_custom_part" = true ]; then
+                    root_end=$((2049 + root_size_mib))MiB
+                else
+                    root_end=104449MiB  # 2049 + 102400 = 104449 (100G) - 兼容旧逻辑
+                fi
+                parted /dev/$xda -s -- \
+                    mklabel msdos \
+                    mkpart primary ext4 $boot_start $boot_end \
+                    mkpart primary ext4 $root_start $root_end \
+                    mkpart primary ext4 $root_end -$installer_part_size \
+                    mkpart primary ext4 -$installer_part_size 100% \
+                    set 1 boot on
+                update_part
+
+                mkfs.ext4 -F -L boot /dev/$xda*1                 #1 /boot
+                mkfs.ext4 -F -L os /dev/$xda*2                   #2 /
+                mkfs.ext4 -F -L data /dev/$xda*3                 #3 /data
+                mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*4 #4 installer
+            fi
         fi
         update_part
     fi
