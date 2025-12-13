@@ -2744,7 +2744,7 @@ create_part() {
                 mklabel gpt \
                 mkpart '" "' fat32 1MiB 101MiB \
                 mkpart '" "' ext4 101MiB 100% \
-                set 1 boot on
+                set 1 esp on
             update_part
 
             mkfs.fat /dev/$xda*1                #1 efi
@@ -2815,7 +2815,7 @@ create_part() {
                 mkpart '" "' ext4 $root_start $root_end \
                 mkpart '" "' ext4 $root_end -$installer_part_size \
                 mkpart '" "' ext4 -$installer_part_size 100% \
-                set 1 boot on
+                set 1 esp on
             update_part
 
             mkfs.fat -n efi /dev/$xda*1                      #1 efi
@@ -5021,6 +5021,17 @@ EOF
                 error_and_exit "Cannot find EFI partition /dev/$xda*1"
             fi
             
+            # 验证并设置 ESP 标志
+            apk add parted
+            efi_part_num=1
+            efi_part_type=$(parted /dev/$xda -s print | awk "\$1==$efi_part_num {print \$6}" | grep -i esp || echo "")
+            if [ -z "$efi_part_type" ] || [ "$efi_part_type" != "esp" ]; then
+                warn "EFI partition $efi_dev does not have ESP flag, setting it now..."
+                parted /dev/$xda -s -- set $efi_part_num esp on
+                update_part
+                info "ESP flag set on partition $efi_part_num"
+            fi
+            
             # 检查是否已挂载
             if ! mountpoint -q $os_dir/boot/efi 2>/dev/null; then
                 # 检查分区格式
@@ -5052,13 +5063,59 @@ EOF
             fi
             rm -f "$os_dir/boot/efi/.grub_install_test"
             
-            # 执行 grub-install
+            # 在 chroot 中验证挂载状态
+            info "Verifying EFI partition in chroot environment..."
+            if ! chroot $os_dir test -d /boot/efi; then
+                error_and_exit "EFI partition is not accessible in chroot at /boot/efi"
+            fi
+            # 检查挂载信息（使用多种方法）
+            if ! chroot $os_dir mount 2>/dev/null | grep -q "/boot/efi" && \
+               ! chroot $os_dir findmnt /boot/efi >/dev/null 2>&1 && \
+               ! chroot $os_dir test -f /boot/efi/.grub_install_test 2>/dev/null; then
+                warn "EFI partition may not be properly mounted in chroot, attempting to verify..."
+                # 尝试创建测试文件来验证挂载
+                if ! touch "$os_dir/boot/efi/.chroot_test" 2>/dev/null || \
+                   ! chroot $os_dir test -f /boot/efi/.chroot_test 2>/dev/null; then
+                    error_and_exit "EFI partition is not properly accessible in chroot environment"
+                fi
+                rm -f "$os_dir/boot/efi/.chroot_test"
+            fi
+            
+            # 显示诊断信息
+            info "EFI partition diagnostics:"
+            info "  Device: $efi_dev"
+            info "  Filesystem: $(lsblk -no FSTYPE "$efi_dev" 2>/dev/null || echo "unknown")"
+            info "  ESP flag: $(parted /dev/$xda -s print | awk "\$1==$efi_part_num {print \$6}" || echo "unknown")"
+            info "  Mount point: $os_dir/boot/efi"
+            info "  Mounted: $(mountpoint -q $os_dir/boot/efi && echo "yes" || echo "no")"
+            
+            # 确保/dev在chroot中可访问（grub-install需要读取分区信息）
+            if [ ! -e "$os_dir/dev/$xda" ]; then
+                warn "Device /dev/$xda not accessible in chroot, ensuring /dev is properly bound..."
+                # mount_pseudo_fs应该已经处理了，但再次确认
+                if ! mountpoint -q "$os_dir/dev" 2>/dev/null; then
+                    mount --rbind /dev "$os_dir/dev"
+                fi
+            fi
+            
+            # 执行 grub-install（添加详细输出以便调试）
             info "Installing GRUB to EFI partition..."
-            if chroot $os_dir grub-install --efi-directory=/boot/efi; then
+            # 使用--no-nvram避免在某些环境下创建NVRAM条目失败
+            # 但先尝试正常安装
+            if chroot $os_dir grub-install --efi-directory=/boot/efi --verbose 2>&1 | tee /tmp/grub_install.log; then
                 info "GRUB installed successfully to EFI partition"
             else
-                error_and_exit "grub-install failed. Please check: 1) EFI partition is properly formatted as FAT32, 2) EFI partition is mounted at /boot/efi, 3) /sys/firmware/efi is accessible in chroot."
+                error_msg=$(cat /tmp/grub_install.log 2>/dev/null || echo "Unknown error")
+                # 如果失败，尝试使用--no-nvram选项
+                warn "First grub-install attempt failed, trying with --no-nvram option..."
+                if chroot $os_dir grub-install --efi-directory=/boot/efi --no-nvram --verbose 2>&1 | tee /tmp/grub_install.log; then
+                    info "GRUB installed successfully with --no-nvram option"
+                else
+                    error_msg=$(cat /tmp/grub_install.log 2>/dev/null || echo "Unknown error")
+                    error_and_exit "grub-install failed. Error details: $error_msg. Please check: 1) EFI partition has ESP flag set, 2) EFI partition is properly formatted as FAT32, 3) EFI partition is mounted at /boot/efi, 4) /sys/firmware/efi is accessible in chroot, 5) /dev devices are accessible in chroot."
+                fi
             fi
+            rm -f /tmp/grub_install.log
             
             # 安装可移动引导项（fallback）
             info "Installing removable GRUB entry..."
