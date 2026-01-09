@@ -5216,6 +5216,43 @@ EOF
                 info "Successfully mounted EFI partition at /boot/efi"
             else
                 info "EFI partition already mounted at /boot/efi"
+                # 即使已挂载，也验证一下挂载是否正确
+                if ! test -d "$os_dir/boot/efi/EFI" 2>/dev/null; then
+                    warn "EFI partition mounted but /EFI directory missing, remounting..."
+                    umount $os_dir/boot/efi 2>/dev/null || true
+                    sleep 1
+                    if ! mount -o $efi_mount_opts "$efi_dev" $os_dir/boot/efi/; then
+                        error_and_exit "Failed to remount EFI partition"
+                    fi
+                fi
+            fi
+            
+            # 确保EFI分区使用bind mount以便在chroot中正确访问
+            # grub-install需要能够在chroot中访问EFI分区
+            if ! chroot $os_dir test -d /boot/efi/EFI 2>/dev/null; then
+                warn "EFI partition not accessible in chroot, switching to bind mount..."
+                # 先卸载当前挂载
+                umount $os_dir/boot/efi 2>/dev/null || true
+                sleep 1
+                # 先挂载到临时位置
+                mkdir -p /tmp/efi_mount
+                if mount -o $efi_mount_opts "$efi_dev" /tmp/efi_mount/; then
+                    # 然后使用bind mount到目标位置
+                    mount --bind /tmp/efi_mount $os_dir/boot/efi/
+                    if chroot $os_dir test -d /boot/efi/EFI 2>/dev/null; then
+                        info "EFI partition now accessible in chroot via bind mount"
+                    else
+                        # 如果bind mount失败，尝试直接挂载
+                        umount $os_dir/boot/efi 2>/dev/null || true
+                        umount /tmp/efi_mount 2>/dev/null || true
+                        mount -o $efi_mount_opts "$efi_dev" $os_dir/boot/efi/
+                        if ! chroot $os_dir test -d /boot/efi/EFI 2>/dev/null; then
+                            error_and_exit "EFI partition is not accessible in chroot environment at /boot/efi/EFI"
+                        fi
+                    fi
+                else
+                    error_and_exit "Failed to mount EFI partition for chroot access"
+                fi
             fi
             
             # 验证挂载点是否可访问并创建必要的目录
@@ -5267,23 +5304,73 @@ EOF
             # 执行 grub-install（添加详细输出以便调试）
             info "Installing GRUB to EFI partition..."
             used_no_nvram=false
+            grub_install_success=false
+            
+            # 使用临时文件来捕获输出和退出状态
+            grub_install_log=$(mktemp)
+            
             # 使用--no-nvram避免在某些环境下创建NVRAM条目失败
             # 但先尝试正常安装
-            if chroot $os_dir grub-install --efi-directory=/boot/efi --verbose 2>&1 | tee /tmp/grub_install.log; then
-                info "GRUB installed successfully to EFI partition"
-            else
-                error_msg=$(cat /tmp/grub_install.log 2>/dev/null || echo "Unknown error")
-                # 如果失败，尝试使用--no-nvram选项
-                warn "First grub-install attempt failed, trying with --no-nvram option..."
-                if chroot $os_dir grub-install --efi-directory=/boot/efi --no-nvram --verbose 2>&1 | tee /tmp/grub_install.log; then
-                    info "GRUB installed successfully with --no-nvram option"
-                    used_no_nvram=true
+            if chroot $os_dir grub-install --efi-directory=/boot/efi --verbose >"$grub_install_log" 2>&1; then
+                # 即使退出码为0，也要检查输出中是否有错误
+                if ! grep -qi "error:" "$grub_install_log"; then
+                    grub_install_success=true
+                    info "GRUB installed successfully to EFI partition"
+                    cat "$grub_install_log"
                 else
-                    error_msg=$(cat /tmp/grub_install.log 2>/dev/null || echo "Unknown error")
-                    error_and_exit "grub-install failed. Error details: $error_msg. Please check: 1) EFI partition has ESP flag set, 2) EFI partition is properly formatted as FAT32, 3) EFI partition is mounted at /boot/efi, 4) /sys/firmware/efi is accessible in chroot, 5) /dev devices are accessible in chroot."
+                    error_msg=$(grep -i "error:" "$grub_install_log" | head -1)
+                    warn "grub-install reported error despite exit code 0: $error_msg"
                 fi
             fi
-            rm -f /tmp/grub_install.log
+            
+            # 如果第一次尝试失败，尝试使用--no-nvram选项
+            if [ "$grub_install_success" != "true" ]; then
+                error_msg=$(grep -i "error:" "$grub_install_log" 2>/dev/null | head -1 || echo "Unknown error")
+                warn "First grub-install attempt failed: $error_msg"
+                warn "Trying with --no-nvram option..."
+                
+                if chroot $os_dir grub-install --efi-directory=/boot/efi --no-nvram --verbose >"$grub_install_log" 2>&1; then
+                    if ! grep -qi "error:" "$grub_install_log"; then
+                        grub_install_success=true
+                        used_no_nvram=true
+                        info "GRUB installed successfully with --no-nvram option"
+                        cat "$grub_install_log"
+                    else
+                        error_msg=$(grep -i "error:" "$grub_install_log" | head -1)
+                        warn "grub-install with --no-nvram also reported error: $error_msg"
+                    fi
+                fi
+                
+                # 如果仍然失败，检查是否是EFI分区识别问题
+                if [ "$grub_install_success" != "true" ]; then
+                    error_msg=$(grep -i "error:" "$grub_install_log" 2>/dev/null | head -1 || cat "$grub_install_log" | tail -5)
+                    if echo "$error_msg" | grep -qi "doesn't look like an EFI partition"; then
+                        # 尝试使用bind mount重新挂载EFI分区
+                        warn "EFI partition recognition issue detected, attempting to fix with bind mount..."
+                        umount $os_dir/boot/efi 2>/dev/null || true
+                        sleep 1
+                        # 使用bind mount确保在chroot中可见
+                        if mount --bind "$efi_dev" $os_dir/boot/efi/ 2>/dev/null || mount -o $efi_mount_opts "$efi_dev" $os_dir/boot/efi/; then
+                            info "EFI partition remounted, retrying grub-install..."
+                            if chroot $os_dir grub-install --efi-directory=/boot/efi --no-nvram --verbose >"$grub_install_log" 2>&1; then
+                                if ! grep -qi "error:" "$grub_install_log"; then
+                                    grub_install_success=true
+                                    used_no_nvram=true
+                                    info "GRUB installed successfully after remounting EFI partition"
+                                    cat "$grub_install_log"
+                                fi
+                            fi
+                        fi
+                    fi
+                    
+                    # 如果所有尝试都失败，报告错误
+                    if [ "$grub_install_success" != "true" ]; then
+                        error_msg=$(cat "$grub_install_log" 2>/dev/null | tail -20)
+                        error_and_exit "grub-install failed after all attempts. Error details: $error_msg. Please check: 1) EFI partition has ESP flag set, 2) EFI partition is properly formatted as FAT32, 3) EFI partition is mounted at /boot/efi, 4) /sys/firmware/efi is accessible in chroot, 5) /dev devices are accessible in chroot."
+                    fi
+                fi
+            fi
+            rm -f "$grub_install_log"
             
             # 安装可移动引导项（fallback）
             info "Installing removable GRUB entry..."
