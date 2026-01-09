@@ -899,6 +899,7 @@ add_default_efi_to_nvram() {
         efi_part_num=$(get_part_num_by_part "$efi_part_name")
         efi_file=$(get_fallback_efi_file_name)
 
+        # 创建fallback引导项（\EFI\boot\bootx64.efi 或 \EFI\boot\bootaa64.efi）
         # 创建条目，先判断是否已经存在
         # 好像没必要先判断
         if true || ! efibootmgr | grep -i "HD($efi_part_num,GPT,$efi_part_uuid,.*)/File(\\\EFI\\\boot\\\\$efi_file)"; then
@@ -906,7 +907,94 @@ add_default_efi_to_nvram() {
                 --disk "/dev/$xda" \
                 --part "$efi_part_num" \
                 --label "$efi_file" \
-                --loader "\\EFI\\boot\\$efi_file"
+                --loader "\\EFI\\boot\\$efi_file" || warn "Failed to create fallback EFI entry"
+        fi
+
+        # 对于Ubuntu系统，创建Ubuntu特定的EFI引导项
+        # 这很重要，因为某些UEFI固件不会自动使用fallback引导项
+        if [ "$distro" = "ubuntu" ]; then
+            # 检查EFI分区是否已挂载
+            efi_mount_point=""
+            efi_temp_mount=false
+            
+            # 按优先级检查挂载点
+            if mountpoint -q /os/boot/efi 2>/dev/null; then
+                efi_mount_point="/os/boot/efi"
+            elif mountpoint -q /boot/efi 2>/dev/null; then
+                efi_mount_point="/boot/efi"
+            else
+                # 尝试挂载EFI分区
+                efi_dev=$(ls /dev/$xda*1 2>/dev/null | head -1)
+                if [ -n "$efi_dev" ]; then
+                    mkdir -p /tmp/efi_mount
+                    if mount -o ro "$efi_dev" /tmp/efi_mount 2>/dev/null; then
+                        efi_mount_point="/tmp/efi_mount"
+                        efi_temp_mount=true
+                    fi
+                fi
+            fi
+
+            if [ -n "$efi_mount_point" ]; then
+                # 确定Ubuntu EFI文件名（可能是grubx64.efi或shimx64.efi）
+                ubuntu_efi_file=""
+                ubuntu_efi_path=""
+                
+                # 优先使用shim（如果存在），因为某些机器需要Secure Boot支持
+                case $(arch) in
+                x86_64)
+                    if [ -f "$efi_mount_point/EFI/ubuntu/shimx64.efi" ]; then
+                        ubuntu_efi_file="shimx64.efi"
+                        ubuntu_efi_path="\\EFI\\ubuntu\\$ubuntu_efi_file"
+                    elif [ -f "$efi_mount_point/EFI/ubuntu/grubx64.efi" ]; then
+                        ubuntu_efi_file="grubx64.efi"
+                        ubuntu_efi_path="\\EFI\\ubuntu\\$ubuntu_efi_file"
+                    fi
+                    ;;
+                aarch64)
+                    if [ -f "$efi_mount_point/EFI/ubuntu/shimaa64.efi" ]; then
+                        ubuntu_efi_file="shimaa64.efi"
+                        ubuntu_efi_path="\\EFI\\ubuntu\\$ubuntu_efi_file"
+                    elif [ -f "$efi_mount_point/EFI/ubuntu/grubaa64.efi" ]; then
+                        ubuntu_efi_file="grubaa64.efi"
+                        ubuntu_efi_path="\\EFI\\ubuntu\\$ubuntu_efi_file"
+                    fi
+                    ;;
+                esac
+
+                if [ -n "$ubuntu_efi_file" ] && [ -n "$ubuntu_efi_path" ]; then
+                    info "Found Ubuntu EFI file: $ubuntu_efi_file"
+                    info "Creating Ubuntu EFI boot entry: $ubuntu_efi_path"
+                    # 检查是否已存在Ubuntu引导项
+                    if ! efibootmgr | grep -qi "ubuntu"; then
+                        if efibootmgr --create \
+                            --disk "/dev/$xda" \
+                            --part "$efi_part_num" \
+                            --label "Ubuntu" \
+                            --loader "$ubuntu_efi_path" 2>&1; then
+                            info "Successfully created Ubuntu EFI boot entry"
+                        else
+                            warn "Failed to create Ubuntu EFI entry, but fallback entry should still work"
+                        fi
+                    else
+                        info "Ubuntu EFI entry already exists in NVRAM"
+                    fi
+                else
+                    warn "Ubuntu EFI file not found in $efi_mount_point/EFI/ubuntu/, skipping Ubuntu-specific entry"
+                    # 列出EFI/ubuntu目录内容以便调试
+                    if [ -d "$efi_mount_point/EFI/ubuntu" ]; then
+                        info "Contents of $efi_mount_point/EFI/ubuntu/:"
+                        ls -la "$efi_mount_point/EFI/ubuntu/" 2>/dev/null || true
+                    fi
+                fi
+
+                # 如果临时挂载了EFI分区，现在卸载
+                if [ "$efi_temp_mount" = true ]; then
+                    umount /tmp/efi_mount 2>/dev/null || true
+                    rmdir /tmp/efi_mount 2>/dev/null || true
+                fi
+            else
+                warn "Cannot mount EFI partition to check for Ubuntu EFI files, skipping Ubuntu-specific entry"
+            fi
         fi
     else
         # shellcheck disable=SC2154
@@ -5178,6 +5266,7 @@ EOF
             
             # 执行 grub-install（添加详细输出以便调试）
             info "Installing GRUB to EFI partition..."
+            used_no_nvram=false
             # 使用--no-nvram避免在某些环境下创建NVRAM条目失败
             # 但先尝试正常安装
             if chroot $os_dir grub-install --efi-directory=/boot/efi --verbose 2>&1 | tee /tmp/grub_install.log; then
@@ -5188,6 +5277,7 @@ EOF
                 warn "First grub-install attempt failed, trying with --no-nvram option..."
                 if chroot $os_dir grub-install --efi-directory=/boot/efi --no-nvram --verbose 2>&1 | tee /tmp/grub_install.log; then
                     info "GRUB installed successfully with --no-nvram option"
+                    used_no_nvram=true
                 else
                     error_msg=$(cat /tmp/grub_install.log 2>/dev/null || echo "Unknown error")
                     error_and_exit "grub-install failed. Error details: $error_msg. Please check: 1) EFI partition has ESP flag set, 2) EFI partition is properly formatted as FAT32, 3) EFI partition is mounted at /boot/efi, 4) /sys/firmware/efi is accessible in chroot, 5) /dev devices are accessible in chroot."
@@ -5198,6 +5288,12 @@ EOF
             # 安装可移动引导项（fallback）
             info "Installing removable GRUB entry..."
             chroot $os_dir grub-install --efi-directory=/boot/efi --removable || warn "Failed to install removable GRUB entry, continuing..."
+            
+            # 如果使用了--no-nvram选项，需要手动创建NVRAM条目
+            # 注意：这需要在chroot外部执行，因为需要访问真实的EFI变量
+            if [ "$used_no_nvram" = true ]; then
+                warn "grub-install used --no-nvram option, will manually create EFI boot entries later"
+            fi
         else
             chroot $os_dir grub-install /dev/$xda
         fi
