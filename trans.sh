@@ -938,31 +938,75 @@ add_default_efi_to_nvram() {
                 # 确定Ubuntu EFI文件名（可能是grubx64.efi或shimx64.efi）
                 ubuntu_efi_file=""
                 ubuntu_efi_path=""
+                efi_dir=""
                 
                 # 优先使用shim（如果存在），因为某些机器需要Secure Boot支持
+                # 按优先级检查多个可能的EFI文件位置
                 case $(arch) in
                 x86_64)
+                    # 1. 首先检查标准Ubuntu位置
                     if [ -f "$efi_mount_point/EFI/ubuntu/shimx64.efi" ]; then
                         ubuntu_efi_file="shimx64.efi"
                         ubuntu_efi_path="\\EFI\\ubuntu\\$ubuntu_efi_file"
+                        efi_dir="ubuntu"
                     elif [ -f "$efi_mount_point/EFI/ubuntu/grubx64.efi" ]; then
                         ubuntu_efi_file="grubx64.efi"
                         ubuntu_efi_path="\\EFI\\ubuntu\\$ubuntu_efi_file"
+                        efi_dir="ubuntu"
+                    # 2. 检查grub-install可能安装到的位置
+                    elif [ -f "$efi_mount_point/EFI/grub/shimx64.efi" ]; then
+                        ubuntu_efi_file="shimx64.efi"
+                        ubuntu_efi_path="\\EFI\\grub\\$ubuntu_efi_file"
+                        efi_dir="grub"
+                    elif [ -f "$efi_mount_point/EFI/grub/grubx64.efi" ]; then
+                        ubuntu_efi_file="grubx64.efi"
+                        ubuntu_efi_path="\\EFI\\grub\\$ubuntu_efi_file"
+                        efi_dir="grub"
+                    # 3. 检查BOOT目录（fallback位置）
+                    elif [ -f "$efi_mount_point/EFI/BOOT/shimx64.efi" ]; then
+                        ubuntu_efi_file="shimx64.efi"
+                        ubuntu_efi_path="\\EFI\\BOOT\\$ubuntu_efi_file"
+                        efi_dir="BOOT"
+                    elif [ -f "$efi_mount_point/EFI/BOOT/grubx64.efi" ]; then
+                        ubuntu_efi_file="grubx64.efi"
+                        ubuntu_efi_path="\\EFI\\BOOT\\$ubuntu_efi_file"
+                        efi_dir="BOOT"
                     fi
                     ;;
                 aarch64)
+                    # 1. 首先检查标准Ubuntu位置
                     if [ -f "$efi_mount_point/EFI/ubuntu/shimaa64.efi" ]; then
                         ubuntu_efi_file="shimaa64.efi"
                         ubuntu_efi_path="\\EFI\\ubuntu\\$ubuntu_efi_file"
+                        efi_dir="ubuntu"
                     elif [ -f "$efi_mount_point/EFI/ubuntu/grubaa64.efi" ]; then
                         ubuntu_efi_file="grubaa64.efi"
                         ubuntu_efi_path="\\EFI\\ubuntu\\$ubuntu_efi_file"
+                        efi_dir="ubuntu"
+                    # 2. 检查grub-install可能安装到的位置
+                    elif [ -f "$efi_mount_point/EFI/grub/shimaa64.efi" ]; then
+                        ubuntu_efi_file="shimaa64.efi"
+                        ubuntu_efi_path="\\EFI\\grub\\$ubuntu_efi_file"
+                        efi_dir="grub"
+                    elif [ -f "$efi_mount_point/EFI/grub/grubaa64.efi" ]; then
+                        ubuntu_efi_file="grubaa64.efi"
+                        ubuntu_efi_path="\\EFI\\grub\\$ubuntu_efi_file"
+                        efi_dir="grub"
+                    # 3. 检查BOOT目录（fallback位置）
+                    elif [ -f "$efi_mount_point/EFI/BOOT/shimaa64.efi" ]; then
+                        ubuntu_efi_file="shimaa64.efi"
+                        ubuntu_efi_path="\\EFI\\BOOT\\$ubuntu_efi_file"
+                        efi_dir="BOOT"
+                    elif [ -f "$efi_mount_point/EFI/BOOT/grubaa64.efi" ]; then
+                        ubuntu_efi_file="grubaa64.efi"
+                        ubuntu_efi_path="\\EFI\\BOOT\\$ubuntu_efi_file"
+                        efi_dir="BOOT"
                     fi
                     ;;
                 esac
 
                 if [ -n "$ubuntu_efi_file" ] && [ -n "$ubuntu_efi_path" ]; then
-                    info "Found Ubuntu EFI file: $ubuntu_efi_file"
+                    info "Found Ubuntu EFI file: $ubuntu_efi_file in EFI/$efi_dir/"
                     info "Creating Ubuntu EFI boot entry: $ubuntu_efi_path"
                     # 检查是否已存在Ubuntu引导项
                     if ! efibootmgr | grep -qi "ubuntu"; then
@@ -979,12 +1023,14 @@ add_default_efi_to_nvram() {
                         info "Ubuntu EFI entry already exists in NVRAM"
                     fi
                 else
-                    warn "Ubuntu EFI file not found in $efi_mount_point/EFI/ubuntu/, skipping Ubuntu-specific entry"
-                    # 列出EFI/ubuntu目录内容以便调试
-                    if [ -d "$efi_mount_point/EFI/ubuntu" ]; then
-                        info "Contents of $efi_mount_point/EFI/ubuntu/:"
-                        ls -la "$efi_mount_point/EFI/ubuntu/" 2>/dev/null || true
-                    fi
+                    warn "GRUB EFI files not found in expected locations, listing EFI partition contents:"
+                    # 列出所有可能的EFI目录以便调试
+                    for dir in ubuntu grub BOOT; do
+                        if [ -d "$efi_mount_point/EFI/$dir" ]; then
+                            info "Contents of $efi_mount_point/EFI/$dir/:"
+                            ls -la "$efi_mount_point/EFI/$dir/" 2>/dev/null || true
+                        fi
+                    done
                 fi
 
                 # 如果临时挂载了EFI分区，现在卸载
