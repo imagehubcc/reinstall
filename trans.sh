@@ -5373,8 +5373,34 @@ EOF
             rm -f "$grub_install_log"
             
             # 安装可移动引导项（fallback）
+            # 验证GRUB文件是否真的安装到了EFI分区
+            info "Verifying GRUB installation in EFI partition..."
+            grub_files_found=false
+            if [ -f "$os_dir/boot/efi/EFI/ubuntu/grubx64.efi" ] || [ -f "$os_dir/boot/efi/EFI/ubuntu/shimx64.efi" ]; then
+                grub_files_found=true
+                info "GRUB EFI files found in /boot/efi/EFI/ubuntu/"
+            elif [ -f "$os_dir/boot/efi/EFI/boot/bootx64.efi" ]; then
+                grub_files_found=true
+                info "GRUB EFI files found in /boot/efi/EFI/boot/"
+            fi
+            
+            if [ "$grub_files_found" = false ]; then
+                warn "GRUB EFI files not found in expected locations, listing EFI partition contents:"
+                ls -la "$os_dir/boot/efi/EFI/" 2>/dev/null || true
+                ls -la "$os_dir/boot/efi/EFI/ubuntu/" 2>/dev/null || true
+                ls -la "$os_dir/boot/efi/EFI/boot/" 2>/dev/null || true
+            fi
+            
+            # 安装可移动引导项（fallback）
             info "Installing removable GRUB entry..."
             chroot $os_dir grub-install --efi-directory=/boot/efi --removable || warn "Failed to install removable GRUB entry, continuing..."
+            
+            # 再次验证fallback文件
+            if [ -f "$os_dir/boot/efi/EFI/boot/bootx64.efi" ]; then
+                info "Fallback GRUB file (bootx64.efi) successfully installed"
+            else
+                warn "Fallback GRUB file (bootx64.efi) not found after --removable install"
+            fi
             
             # 如果使用了--no-nvram选项，需要手动创建NVRAM条目
             # 注意：这需要在chroot外部执行，因为需要访问真实的EFI变量
@@ -7814,6 +7840,20 @@ trans() {
     # 需要用到 lsblk efibootmgr ，只要 1M 左右容量
     # 因此 alpine 不单独处理
     if is_efi; then
+        # 确保EFI分区已挂载，以便add_default_efi_to_nvram可以访问EFI文件
+        efi_dev=$(ls /dev/$xda*1 2>/dev/null | head -1)
+        if [ -n "$efi_dev" ]; then
+            # 检查是否已挂载
+            if ! mountpoint -q /os/boot/efi 2>/dev/null && ! mountpoint -q /boot/efi 2>/dev/null; then
+                info "Mounting EFI partition for NVRAM entry creation..."
+                mkdir -p /os/boot/efi
+                efi_mount_opts=$(case "$distro" in ubuntu) echo "umask=0077" ;; *) echo "defaults,uid=0,gid=0,umask=077,shortname=winnt" ;; esac)
+                if ! mount -o $efi_mount_opts "$efi_dev" /os/boot/efi/ 2>/dev/null; then
+                    warn "Failed to mount EFI partition, but will continue with NVRAM entry creation"
+                fi
+            fi
+        fi
+        
         del_invalid_efi_entry
         add_default_efi_to_nvram
     fi
