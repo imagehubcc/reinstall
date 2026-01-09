@@ -18,6 +18,8 @@ One-Click system reinstallation script for VPS [中文](README.md)
 - Uses partition table ID to identify hard drives throughout the process, ensuring no wrong disk is written
 - Supports BIOS and EFI boot, and ARM Server
 - No homemades image included, all resources are obtained in real-time from mirror sites
+- **Smart EFI Boot Management**: Automatically detects and creates EFI boot entries, supports multiple EFI file paths (`/EFI/ubuntu/`, `/EFI/grub/`, `/EFI/BOOT/`), ensuring the system can boot normally
+- **Optimized Installation Logs**: Automatically filters redundant log output from `grub-install`, showing only errors and important information for easier progress monitoring
 
 If this helped you, you can buy me a milk tea.
 [![Donate](https://img.shields.io/badge/Donate-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/bin456789)
@@ -151,6 +153,8 @@ certutil -urlcache -f -split https://cnb.cool/bin456789/reinstall/-/git/raw/main
 - Automatically selects different optimized kernels based on machine type, such as `Cloud` or `HWE` kernels.
 - When installing Red Hat, you must provide the `qcow2` image link obtained from <https://access.redhat.com/downloads/content/rhel>. You can also install other RHEL-based OS, such as `Alibaba Cloud Linux` and `TencentOS Server`.
 - After reinstallation, if you need to change the SSH port or switch to key-based login, make sure to also modify the files inside `/etc/ssh/sshd_config.d/`.
+- **EFI Boot Optimization**: Automatically handles EFI partition mounting, ESP flag setting, GRUB installation, and NVRAM entry creation, with automatic detection of multiple EFI file paths (`/EFI/ubuntu/`, `/EFI/grub/`, `/EFI/BOOT/`)
+- **Installation Log Optimization**: `grub-install` output is optimized to automatically filter redundant locale and scanning logs, showing only errors, warnings, and important installation information for easier progress monitoring
 
 ```bash
 bash reinstall.sh anolis      7|8|23
@@ -191,6 +195,8 @@ bash reinstall.sh anolis      7|8|23
 > Even if errors occur during the installation process, SSH is available for manual recovery.
 >
 > If the target system is not Debian/Kali, run `/trans.sh alpine` can automatically recover to Alpine Linux.
+>
+> **Installation Log Optimization**: The output from `grub-install` is automatically filtered to show only errors and important information, avoiding interference from large amounts of locale-related logs, making the installation progress clearer and easier to read.
 
 <details>
 

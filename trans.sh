@@ -5053,6 +5053,9 @@ EOF
     modify_ubuntu() {
         os_dir=/os
         info "Modify Ubuntu"
+        
+        # 定义 EFI 挂载选项
+        efi_mount_opts=$(case "$distro" in ubuntu) echo "umask=0077" ;; *) echo "defaults,uid=0,gid=0,umask=077,shortname=winnt" ;; esac)
 
         cp_resolv_conf $os_dir
 
@@ -5464,7 +5467,7 @@ EOF
                 warn "grub-install used --no-nvram option, will manually create EFI boot entries later"
             fi
         else
-            chroot $os_dir grub-install /dev/$xda
+            chroot $os_dir grub-install /dev/$xda 2>&1 | filter_grub_install_output || true
         fi
 
         # 要重新生成 grub.cfg，因为

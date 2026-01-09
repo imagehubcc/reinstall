@@ -18,6 +18,8 @@
 - 全程用分区表 ID 识别硬盘，确保不会写错硬盘
 - 支持 BIOS、EFI 引导，支持 ARM 服务器
 - 不含自制包，所有资源均实时从镜像源获得
+- **智能 EFI 引导管理**：自动检测并创建 EFI 引导条目，支持多种 EFI 文件路径（`/EFI/ubuntu/`、`/EFI/grub/`、`/EFI/BOOT/`），确保系统可正常启动
+- **优化的安装日志**：自动过滤 `grub-install` 的冗余日志输出，只显示错误和重要信息，便于查看安装进度
 
 如果帮到你，可以请我喝奶茶。
 [![Donate](https://img.shields.io/badge/Donate-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/bin456789)
@@ -136,6 +138,8 @@ certutil -urlcache -f -split https://raw.githubusercontent.com/imagehubcc/reinst
 - 自动根据机器类型选择不同的优化内核，例如 `Cloud`、`HWE` 内核
 - 安装 Red Hat 时需填写 <https://access.redhat.com/downloads/content/rhel> 得到的 `qcow2` 镜像链接，也可以安装其它类 RHEL 系统，例如 `Alibaba Cloud Linux` 和 `TencentOS Server`
 - 重装后如需修改 SSH 端口或者改成密钥登录，注意还要修改 `/etc/ssh/sshd_config.d/` 里面的文件
+- **EFI 引导优化**：自动处理 EFI 分区挂载、ESP 标志设置、GRUB 安装和 NVRAM 条目创建，支持多种 EFI 文件路径自动检测（`/EFI/ubuntu/`、`/EFI/grub/`、`/EFI/BOOT/`）
+- **安装日志优化**：`grub-install` 输出已优化，自动过滤冗余的 locale 和扫描日志，只显示错误、警告和重要安装信息，便于查看安装进度
 
 ```bash
 bash reinstall.sh anolis      7|8|23
@@ -177,6 +181,10 @@ bash reinstall.sh anolis      7|8|23
 > 即使安装过程出错，也能连接 SSH 手动救砖。
 >
 > 目标系统非 Debian/Kali 时，可以运行 `/trans.sh alpine` 自动救砖成 Alpine 系统。
+>
+> **安装日志优化**：`grub-install` 的输出已自动过滤，只显示错误和重要信息，避免被大量 locale 相关日志干扰，让安装进度更清晰易读。
+>
+> **安装日志优化**：`grub-install` 的输出已自动过滤，只显示错误和重要信息，避免被大量 locale 相关日志干扰。
 
 #### Ubuntu 自定义分区
 
