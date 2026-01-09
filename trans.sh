@@ -884,6 +884,16 @@ grep_efi_index() {
     awk '{print $1}' | sed -e 's/Boot//' -e 's/\*//'
 }
 
+# 过滤 grub-install 输出，只保留错误和警告，过滤掉 locale 相关的 info 消息
+filter_grub_install_output() {
+    # 过滤掉 locale 相关的 "cannot open" 和 "copying" 消息
+    grep -v -E "grub-install: info: (cannot open|copying).*(locale|grub\.mo|/usr/share/locale)" | \
+    # 过滤掉扫描和查找相关的详细日志
+    grep -v -E "^grub-install: info: (Scanning|scanning|Looking|looking|opening|drive|size|Partition|no (LDM|LVM) signature)" | \
+    # 保留错误、警告和重要信息
+    grep -E "(error|warning|warn|installing|installed|success|fail|Installing for|Installing|GRUB|executing)" || true
+}
+
 # 某些机器可能不会回落到 bootx64.efi
 # 阿里云 ECS 启动项有 EFI Shell
 # 添加 bootx64.efi 到最后的话，会进入 EFI Shell
@@ -1635,7 +1645,7 @@ install_alpine() {
 
     # 3.19 或以上，非 efi 需要手动安装 grub
     if ! is_efi; then
-        chroot /os grub-install --target=i386-pc /dev/$xda
+        chroot /os grub-install --target=i386-pc /dev/$xda 2>&1 | filter_grub_install_output || true
     fi
 
     # efi grub 添加 fwsetup 条目
@@ -2371,10 +2381,10 @@ EOF
     # grub
     if is_efi; then
         # arch gentoo 推荐 efi 挂载在 /efi
-        chroot $os_dir grub-install --efi-directory=/efi
-        chroot $os_dir grub-install --efi-directory=/efi --removable
+        chroot $os_dir grub-install --efi-directory=/efi 2>&1 | filter_grub_install_output || true
+        chroot $os_dir grub-install --efi-directory=/efi --removable 2>&1 | filter_grub_install_output || true
     else
-        chroot $os_dir grub-install /dev/$xda
+        chroot $os_dir grub-install /dev/$xda 2>&1 | filter_grub_install_output || true
     fi
 
     # cmdline + 生成 grub.cfg
@@ -4726,10 +4736,10 @@ install_fnos() {
 
     # grub
     if is_efi; then
-        chroot $os_dir grub-install --efi-directory=/boot/efi
-        chroot $os_dir grub-install --efi-directory=/boot/efi --removable
+        chroot $os_dir grub-install --efi-directory=/boot/efi 2>&1 | filter_grub_install_output || true
+        chroot $os_dir grub-install --efi-directory=/boot/efi --removable 2>&1 | filter_grub_install_output || true
     else
-        chroot $os_dir grub-install /dev/$xda
+        chroot $os_dir grub-install /dev/$xda 2>&1 | filter_grub_install_output || true
     fi
 
     # grub tty
@@ -5091,7 +5101,7 @@ EOF
                 echo grub-pc grub-pc/cloud_style_installation boolean true | chroot $os_dir debconf-set-selections # 24.04
                 chroot $os_dir dpkg-reconfigure -f noninteractive grub-pc
             else
-                chroot $os_dir grub-install /dev/$xda
+                chroot $os_dir grub-install /dev/$xda 2>&1 | filter_grub_install_output || true
             fi
         fi
 
@@ -5362,7 +5372,7 @@ EOF
                 if ! grep -qi "error:" "$grub_install_log"; then
                     grub_install_success=true
                     info "GRUB installed successfully to EFI partition"
-                    cat "$grub_install_log"
+                    filter_grub_install_output <"$grub_install_log"
                 else
                     error_msg=$(grep -i "error:" "$grub_install_log" | head -1)
                     warn "grub-install reported error despite exit code 0: $error_msg"
@@ -5380,7 +5390,7 @@ EOF
                         grub_install_success=true
                         used_no_nvram=true
                         info "GRUB installed successfully with --no-nvram option"
-                        cat "$grub_install_log"
+                        filter_grub_install_output <"$grub_install_log"
                     else
                         error_msg=$(grep -i "error:" "$grub_install_log" | head -1)
                         warn "grub-install with --no-nvram also reported error: $error_msg"
@@ -5403,7 +5413,7 @@ EOF
                                     grub_install_success=true
                                     used_no_nvram=true
                                     info "GRUB installed successfully after remounting EFI partition"
-                                    cat "$grub_install_log"
+                                    filter_grub_install_output <"$grub_install_log"
                                 fi
                             fi
                         fi
@@ -5439,7 +5449,7 @@ EOF
             
             # 安装可移动引导项（fallback）
             info "Installing removable GRUB entry..."
-            chroot $os_dir grub-install --efi-directory=/boot/efi --removable || warn "Failed to install removable GRUB entry, continuing..."
+            chroot $os_dir grub-install --efi-directory=/boot/efi --removable 2>&1 | filter_grub_install_output || warn "Failed to install removable GRUB entry, continuing..."
             
             # 再次验证fallback文件
             if [ -f "$os_dir/boot/efi/EFI/boot/bootx64.efi" ]; then
