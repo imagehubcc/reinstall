@@ -12,10 +12,13 @@ Clone the complete repository:
 git clone --branch main https://github.com/imagehubcc/reinstall.git
 cd reinstall
 sudo bash reinstall.sh ubuntu 24.04 \
+  --username root --password 'YOUR_ROOT_PASSWORD' \
   --root-size 64GiB --boot-size 2GiB --data-size rest --hold 2
 ```
 
-Follow the login setup prompts, then reboot to start installation. With `--hold 2`, the installer pauses after completion with the new system mounted at `/os`; inspect it and reboot into Ubuntu. Omit this option for an automatic final reboot.
+`--username root` selects the root account; `--password` sets its password. Replace `YOUR_ROOT_PASSWORD` with your own password. Omit these options to configure login interactively. Command-line passwords are saved in shell history; omit `--password` to enter it at the prompt instead.
+
+Reboot after preparation to start installation. With `--hold 2`, the installer pauses after completion with the new system mounted at `/os`; inspect it and reboot into Ubuntu. Omit this option for an automatic final reboot.
 
 BIOS/UEFI is detected automatically. UEFI defaults to a 512MiB EFI partition; BIOS uses a 1MiB BIOS-GRUB partition. `--efi-size` is an optional UEFI-only override and is rejected on BIOS before disk partitioning.
 
@@ -29,7 +32,9 @@ BIOS/UEFI is detected automatically. UEFI defaults to a 512MiB EFI partition; BI
 
 Sizes accept positive integers in MiB/GiB/TiB, MB/GB/TB, or binary aliases M/G/T. Fixed allocations leave extra space unallocated. Use `--ssh-port PORT` if a non-default SSH port is required.
 
-Custom layouts do not support other OS versions, ARM, Windows entry points, ISO installation, LVM, software RAID, array creation or reconfiguration, encryption, or preserving existing partitions. Without custom options, the original upstream flow remains available.
+**Custom partitions currently support only Linux-to-Ubuntu 24.04 x86_64 cloud-image installation.** Without custom partition options, the original upstream script’s default installation behavior and features apply.
+
+Custom layouts do not support other OS versions, ARM, Windows entry points, ISO installation, LVM, software RAID, array creation or reconfiguration, encryption, or preserving existing partitions.
 
 See the [Chinese README](README.md), [partition and maintenance guide](CUSTOM-PARTITIONS.md), [validation scope](VPS-VALIDATION.md), and [upstream documentation](https://github.com/bin456789/reinstall#readme).
 

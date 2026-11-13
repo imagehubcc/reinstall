@@ -14,9 +14,9 @@
 - 自动识别 BIOS/UEFI：UEFI 默认创建 512MiB EFI 分区；BIOS 创建 1MiB BIOS-GRUB 保留分区。
 - 清盘前检查参数与容量，自动配置 UUID 挂载和引导。
 
-新增参数支持 **Linux → Ubuntu 24.04 x86_64 云镜像安装**。使用普通 GPT 分区，root/boot/data 为 ext4，EFI 为 FAT32。
+自定义分区目前仅支持 **Linux → Ubuntu 24.04 x86_64 云镜像安装**。使用普通 GPT 分区，root/boot/data 为 ext4，EFI 为 FAT32。
 不支持新增参数的场景：其他发行版或版本、ARM、Windows 入口、ISO 安装、LVM、软件 RAID、阵列创建或调整、加密及保留已有分区。
-不传新增参数时沿用官方流程；其他功能参阅 [上游文档](https://github.com/bin456789/reinstall#readme)。
+**不传自定义分区参数时，沿用原作者脚本的默认安装逻辑和功能**；其他系统及用法参阅 [上游文档](https://github.com/bin456789/reinstall#readme)。
 
 ## 使用
 
@@ -38,6 +38,8 @@ sh partition-plan.sh --disk-size 256GiB --boot-mode bios \
 
 ```sh
 sudo bash reinstall.sh ubuntu 24.04 \
+  --username root \
+  --password 'YOUR_ROOT_PASSWORD' \
   --root-size 64GiB \
   --boot-size 2GiB \
   --data-size rest \
@@ -45,7 +47,8 @@ sudo bash reinstall.sh ubuntu 24.04 \
   --hold 2
 ```
 
-按提示设置账号与登录方式。SSH 默认端口为 22；如需修改，可添加 `--ssh-port 2222`（示例值），并确认网络允许访问。
+`--username root` 指定 root 账号，`--password 'YOUR_ROOT_PASSWORD'` 设置该账号密码，请将占位符替换为自己的密码。省略这两个参数时按提示设置。命令行密码会留在 shell 历史中，也可省略 `--password`，改用交互输入。
+SSH 默认端口为 22；如需修改，可添加 `--ssh-port 2222`（示例值），并确认网络允许访问。
 多磁盘机器应先用 `lsblk` 确认目标，再通过 `--target-disk` 指定。
 
 准备完成后执行 `sudo reboot`，开始重装。`--hold 2` 会在安装结束后暂停，新系统挂载于 `/os`：
