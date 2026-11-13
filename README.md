@@ -15,7 +15,7 @@
 - 清盘前检查参数与容量，自动配置 UUID 挂载和引导。
 
 新增参数支持 **Linux → Ubuntu 24.04 x86_64 云镜像安装**。使用普通 GPT 分区，root/boot/data 为 ext4，EFI 为 FAT32。
-不支持新增参数的场景：其他发行版或版本、ARM、Windows 入口、ISO 安装、LVM、RAID、加密及保留已有分区。
+不支持新增参数的场景：其他发行版或版本、ARM、Windows 入口、ISO 安装、LVM、软件 RAID、阵列创建或调整、加密及保留已有分区。
 不传新增参数时沿用官方流程；其他功能参阅 [上游文档](https://github.com/bin456789/reinstall#readme)。
 
 ## 使用
@@ -73,7 +73,7 @@ BIOS 下显式传入 `--efi-size` 会在准备阶段报错退出，不会继续�
 
 ## 验证与维护
 
-已完成 BIOS VPS 和嵌套 KVM/OVMF UEFI 的重装、内核维护及启动验证，UEFI 另通过持久 NVRAM 冷启动验证。
+已完成 BIOS VPS、BIOS 独立服务器和嵌套 KVM/OVMF UEFI 的重装、内核维护及启动验证，UEFI 另通过持久 NVRAM 冷启动验证。
 
 - [分区规则与上游更新流程](CUSTOM-PARTITIONS.md)
 - [验证范围](VPS-VALIDATION.md)

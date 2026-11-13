@@ -29,6 +29,6 @@ BIOS/UEFI is detected automatically. UEFI defaults to a 512MiB EFI partition; BI
 
 Sizes accept positive integers in MiB/GiB/TiB, MB/GB/TB, or binary aliases M/G/T. Fixed allocations leave extra space unallocated. Use `--ssh-port PORT` if a non-default SSH port is required.
 
-Custom layouts do not support other OS versions, ARM, Windows entry points, ISO installation, LVM, RAID, encryption, or preserving existing partitions. Without custom options, the original upstream flow remains available.
+Custom layouts do not support other OS versions, ARM, Windows entry points, ISO installation, LVM, software RAID, array creation or reconfiguration, encryption, or preserving existing partitions. Without custom options, the original upstream flow remains available.
 
 See the [Chinese README](README.md), [partition and maintenance guide](CUSTOM-PARTITIONS.md), [validation scope](VPS-VALIDATION.md), and [upstream documentation](https://github.com/bin456789/reinstall#readme).
