@@ -13,6 +13,7 @@ git clone --branch main https://github.com/imagehubcc/reinstall.git
 cd reinstall
 sudo bash reinstall.sh ubuntu 24.04 \
   --username root --password 'YOUR_ROOT_PASSWORD' \
+  --ssh-port 2222 \
   --root-size 64GiB --boot-size 2GiB --data-size rest --hold 2
 ```
 
@@ -20,6 +21,8 @@ sudo bash reinstall.sh ubuntu 24.04 \
 
 - Use single quotes around passwords to protect characters such as `$`, `!`, and spaces from shell interpretation; the quotes are not part of the password. If the password contains a single quote, omit `--password` and enter it at the prompt instead. Interactive entry also avoids storing the password in shell history.
 - On Ubuntu, `--username alice` creates a regular account with home directory `/home/alice` and uses the supplied password for that account. It grants passwordless sudo, including `sudo -i` for a root shell; it does not also set root's password or explicitly enable root SSH password login.
+
+`--ssh-port 2222` sets the new system’s SSH port to 2222. Replace it with your preferred port and allow access in your firewall or security group. Omit this option to use port 22. After installation, connect with `ssh -p 2222 root@SERVER_IP`.
 
 Reboot after preparation to start installation. With `--hold 2`, the installer pauses after completion with the new system mounted at `/os`; inspect it and reboot into Ubuntu. Omit this option for an automatic final reboot.
 
@@ -33,7 +36,7 @@ BIOS/UEFI is detected automatically. UEFI defaults to a 512MiB EFI partition; BI
 | `--data-mount /PATH` | Data mount point; default `/data` |
 | `--efi-size SIZE` | Optional UEFI size override; default 512MiB, minimum 100MiB |
 
-Sizes accept positive integers in MiB/GiB/TiB, MB/GB/TB, or binary aliases M/G/T. Fixed allocations leave extra space unallocated. Use `--ssh-port PORT` if a non-default SSH port is required.
+Sizes accept positive integers in MiB/GiB/TiB, MB/GB/TB, or binary aliases M/G/T. Fixed allocations leave extra space unallocated.
 
 **Custom partitions currently support only Linux-to-Ubuntu 24.04 x86_64 cloud-image installation.** Without custom partition options, the original upstream script’s default installation behavior and features apply.
 

@@ -40,6 +40,7 @@ sh partition-plan.sh --disk-size 256GiB --boot-mode bios \
 sudo bash reinstall.sh ubuntu 24.04 \
   --username root \
   --password 'YOUR_ROOT_PASSWORD' \
+  --ssh-port 2222 \
   --root-size 64GiB \
   --boot-size 2GiB \
   --data-size rest \
@@ -52,7 +53,7 @@ sudo bash reinstall.sh ubuntu 24.04 \
 - 建议用英文单引号包裹密码，避免 `$`、`!`、空格等被 shell 解释；引号不属于密码。密码含英文单引号时，建议省略 `--password`，按提示输入，也可避免密码留在 shell 历史中。
 - Ubuntu 下可用 `--username alice` 指定普通用户：创建该账号及 `/home/alice`，密码用于该账号登录，并授予免密 sudo 权限，可用 `sudo -i` 切换到 root；不会同时设置 root 密码或主动开启 root 的 SSH 密码登录。
 
-SSH 默认端口为 22；如需修改，可添加 `--ssh-port 2222`（示例值），并确认网络允许访问。
+示例中的 `--ssh-port 2222` 将新系统的 SSH 端口设为 2222，请替换为实际需要的端口，并放行防火墙或安全组。省略该参数时默认使用 22。安装后通过 `ssh -p 2222 root@SERVER_IP` 连接。
 多磁盘机器应先用 `lsblk` 确认目标，再通过 `--target-disk` 指定。
 
 准备完成后执行 `sudo reboot`，开始重装。`--hold 2` 会在安装结束后暂停，新系统挂载于 `/os`：
