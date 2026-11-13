@@ -119,7 +119,10 @@ class VM:
         args = ['qemu-system-x86_64', '-machine', 'q35', '-m', '3072', '-smp', '2',
                 '-accel', 'kvm' if kvm else 'tcg,thread=multi',
                 '-cpu', 'host' if kvm else 'max',
-                '-drive', f'if=virtio,format=qcow2,file={self.work / "disk.qcow2"}',
+                # This is a disposable test image, not a host block device.
+                # Avoid emulated fsync latency; normal reboot/cold-start tests
+                # still retain the image. Power-loss durability is not tested.
+                '-drive', f'if=virtio,format=qcow2,cache=unsafe,file={self.work / "disk.qcow2"}',
                 '-netdev', f'user,id=n1,hostfwd=tcp:127.0.0.1:{self.port}-:22',
                 '-device', 'virtio-net-pci,netdev=n1,mac=52:54:00:12:34:56',
                 '-display', 'none', '-serial', f'file:{self.work / "serial.log"}']
