@@ -17,6 +17,10 @@ jobs:
         with:
           persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf cloud-image-utils openssh-client
+      - name: Enable KVM when the hosted runner provides it
+        run: |
+          if [[ -c /dev/kvm ]]; then sudo chmod a+rw /dev/kvm; fi
+          ls -l /dev/kvm || true
       - name: Reinstall and boot in isolated QEMU
         env:
           FIRMWARE: ${{ matrix.firmware }}
