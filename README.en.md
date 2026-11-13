@@ -16,7 +16,10 @@ sudo bash reinstall.sh ubuntu 24.04 \
   --root-size 64GiB --boot-size 2GiB --data-size rest --hold 2
 ```
 
-`--username root` selects the root account; `--password` sets its password. Replace `YOUR_ROOT_PASSWORD` with your own password. Omit these options to configure login interactively. Command-line passwords are saved in shell history; omit `--password` to enter it at the prompt instead.
+`--username root` selects the root account; `--password` sets the selected account's password. Replace `YOUR_ROOT_PASSWORD` with your own password. Omit these options to configure login interactively.
+
+- Use single quotes around passwords to protect characters such as `$`, `!`, and spaces from shell interpretation; the quotes are not part of the password. If the password contains a single quote, omit `--password` and enter it at the prompt instead. Interactive entry also avoids storing the password in shell history.
+- On Ubuntu, `--username alice` creates a regular account with home directory `/home/alice` and uses the supplied password for that account. It grants passwordless sudo, including `sudo -i` for a root shell; it does not also set root's password or explicitly enable root SSH password login.
 
 Reboot after preparation to start installation. With `--hold 2`, the installer pauses after completion with the new system mounted at `/os`; inspect it and reboot into Ubuntu. Omit this option for an automatic final reboot.
 

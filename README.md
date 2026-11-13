@@ -47,7 +47,11 @@ sudo bash reinstall.sh ubuntu 24.04 \
   --hold 2
 ```
 
-`--username root` 指定 root 账号，`--password 'YOUR_ROOT_PASSWORD'` 设置该账号密码，请将占位符替换为自己的密码。省略这两个参数时按提示设置。命令行密码会留在 shell 历史中，也可省略 `--password`，改用交互输入。
+`--username root` 指定 root 账号，`--password` 设置所选账号的密码，请将 `YOUR_ROOT_PASSWORD` 替换为自己的密码。省略这两个参数时按提示设置。
+
+- 建议用英文单引号包裹密码，避免 `$`、`!`、空格等被 shell 解释；引号不属于密码。密码含英文单引号时，建议省略 `--password`，按提示输入，也可避免密码留在 shell 历史中。
+- Ubuntu 下可用 `--username alice` 指定普通用户：创建该账号及 `/home/alice`，密码用于该账号登录，并授予免密 sudo 权限，可用 `sudo -i` 切换到 root；不会同时设置 root 密码或主动开启 root 的 SSH 密码登录。
+
 SSH 默认端口为 22；如需修改，可添加 `--ssh-port 2222`（示例值），并确认网络允许访问。
 多磁盘机器应先用 `lsblk` 确认目标，再通过 `--target-disk` 指定。
 
