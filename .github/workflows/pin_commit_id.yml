@@ -4,6 +4,7 @@ on:
 
 jobs:
   run:
+    if: github.repository == 'bin456789/reinstall'
     name: 临时固定 Commit ID
     runs-on: ubuntu-latest
     permissions:

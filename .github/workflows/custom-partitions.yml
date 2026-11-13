@@ -1,0 +1,44 @@
+name: Custom partitions
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'reinstall.sh'
+      - 'trans.sh'
+      - 'partition-*.sh'
+      - 'tests/**'
+      - 'tools/**'
+      - 'UPSTREAM_COMMIT'
+      - '.github/workflows/custom-partitions.yml'
+  pull_request:
+    paths:
+      - '**.sh'
+      - 'tests/**'
+      - 'tools/**'
+      - 'UPSTREAM_COMMIT'
+      - '.github/workflows/custom-partitions.yml'
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: sudo apt-get update && sudo apt-get install -y busybox shellcheck
+      - run: |
+          bash -n reinstall.sh
+          bash -n trans.sh
+          busybox ash -n trans.sh
+          shellcheck -s bash partition-layout.sh partition-plan.sh tests/loop-layout.sh
+          python3 tests/test_partitions.py
+          PARTITION_SHELL='busybox ash' python3 tests/test_partitions.py
+          python3 tools/check-upstream.py
+          python3 tools/build-bundle.py
+  loop-images:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y parted e2fsprogs dosfstools util-linux
+      - run: sudo bash tests/loop-layout.sh

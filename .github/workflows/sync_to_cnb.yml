@@ -4,6 +4,7 @@ on:
   push:
 jobs:
   run:
+    if: github.repository == 'bin456789/reinstall'
     name: 同步到 CNB
     runs-on: ubuntu-latest
     steps:

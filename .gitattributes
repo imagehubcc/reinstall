@@ -1,0 +1,4 @@
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+UPSTREAM_COMMIT text eol=lf

@@ -1,4 +1,5 @@
 #!/bin/ash
+# CUSTOM_PARTITION_API=1
 # shellcheck shell=dash
 # shellcheck disable=SC2086,SC3047,SC3036,SC3010,SC3001,SC3060,SC3015
 # alpine 默认使用 busybox ash
@@ -3077,6 +3078,11 @@ fill_zero() {
 }
 
 create_part() {
+    if [ "${custom_partition:-0}" = 1 ]; then
+        cp_prepare || error_and_exit 'Custom layout validation failed; disk has not been wiped.'
+        cp_create
+        return
+    fi
     # 除了 dd 都会用到
     info "Create Part"
 
@@ -5902,6 +5908,9 @@ EOF
             if grep "'/grub'" $efi_grub_cfg; then
                 sed -i "s|'/grub'|'/boot/grub'|" $efi_grub_cfg
             fi
+            if [ "${custom_partition:-0}" = 1 ]; then
+                cp_fix_efi_grub "$os_dir"
+            fi
         fi
 
         # 处理 40-force-partuuid.cfg
@@ -5927,7 +5936,9 @@ EOF
 
         # fstab
         # 24.04 镜像有boot分区，但我们不需要
-        sed -i '/[[:space:]]\/boot[[:space:]]/d' $os_dir/etc/fstab
+        if [ "${custom_partition:-0}" != 1 ]; then
+            sed -i '/[[:space:]]\/boot[[:space:]]/d' $os_dir/etc/fstab
+        fi
         if ! is_efi; then
             # bios 删除 efi 条目
             sed -i '/[[:space:]]\/boot\/efi[[:space:]]/d' $os_dir/etc/fstab
@@ -6064,6 +6075,9 @@ EOF
     ext4) chroot /nbd mkfs.ext4 -F -L "$os_part_label" -U "$os_part_uuid" "/dev/$(xda os)" ;;
     xfs) chroot /nbd mkfs.xfs -f -L "$os_part_label" -m uuid=$os_part_uuid "/dev/$(xda os)" ;;
     esac
+    if [ "${custom_partition:-0}" = 1 ] && [ -n "${dev_boot:-}" ]; then
+        chroot /nbd mkfs.ext4 -F -L BOOT "$dev_boot"
+    fi
     umount -R /nbd/
 
     # TODO: ubuntu 镜像缺少 mkfs.fat/vfat/dosfstools? initrd 不需要检查fs完整性？
@@ -6071,6 +6085,8 @@ EOF
     # 创建并挂载 /os
     mkdir -p /os
     mount -o noatime "/dev/$(xda os)" /os/
+
+    if [ "${custom_partition:-0}" = 1 ]; then cp_mount_boot; fi
 
     # 如果是 efi 则创建 /os/boot/efi
     # 如果镜像有 efi 分区也创建 /os/boot/efi，用于复制 efi 分区的文件
@@ -6122,6 +6138,9 @@ EOF
     if is_efi; then
         umount /os/boot/efi/
     fi
+    if [ "${custom_partition:-0}" = 1 ] && [ -n "${dev_boot:-}" ]; then
+        umount /os/boot
+    fi
     umount /os/
     umount /installer/
 
@@ -6140,15 +6159,24 @@ EOF
     # 删除 installer 分区并扩容
     info "Delete installer partition"
     apk add parted
-    parted /dev/$xda -s -- rm 3
-    update_part
-    resize_after_install_cloud_image
+    if [ "${custom_partition:-0}" = 1 ]; then
+        cp_finish_partitions
+    else
+        parted /dev/$xda -s -- rm 3
+        update_part
+        resize_after_install_cloud_image
+    fi
 
     # 重新挂载 /os /boot/efi
     info "Re-mount disk"
     mount -o noatime "/dev/$(xda os)" /os/
+    if [ "${custom_partition:-0}" = 1 ]; then cp_mount_boot; fi
     if is_efi; then
         mount -o $efi_mount_opts "/dev/$(xda efi)" /os/boot/efi/
+    fi
+    if [ "${custom_partition:-0}" = 1 ]; then
+        cp_mount_data
+        cp_write_fstab /os
     fi
 
     # 创建 swap
@@ -9058,12 +9086,15 @@ extract_env_from_cmdline
 # 带参数运行部分
 # 重新下载并 exec 运行新脚本
 if [ "$1" = "update" ]; then
+    [ "${custom_partition:-0}" != 1 ] || error_and_exit 'Custom layouts use a pinned local bundle; update the bundle before starting a new installation.'
     info 'update script'
     # shellcheck disable=SC2154
     wget -O /trans.sh "$confhome/trans.sh"
     chmod +x /trans.sh
     exec /trans.sh
 elif [ "$1" = "alpine" ]; then
+    # Explicit rescue request: return to the original upstream Alpine layout.
+    custom_partition=0
     info 'switch to alpine'
     distro=alpine
     # 后面的步骤很多都会用到这个，例如分区布局
@@ -9122,6 +9153,16 @@ if [ "$hold" = 1 ]; then
         info "hold"
         exit
     fi
+fi
+
+# Keep rescue SSH available even if the custom module or its validation fails.
+if [ "${custom_partition:-0}" = 1 ]; then
+    [ -f /configs/partition-layout.sh ] || error_and_exit 'Custom partition module is missing.'
+    # shellcheck source=partition-layout.sh
+    # shellcheck disable=SC1091
+    . /configs/partition-layout.sh
+    [ "$CUSTOM_PARTITION_API" = 1 ] || error_and_exit 'Custom partition API mismatch.'
+    cp_check_target || error_and_exit 'Unsupported or invalid custom layout.'
 fi
 
 # 正式运行重装

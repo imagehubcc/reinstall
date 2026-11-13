@@ -121,6 +121,14 @@ Usage: $reinstall_____ anolis      7|8|23
                        For Linux Only:
                        [--no-cloud-kernel]         (only for Debian/Ubuntu/Alpine/openSUSE)
 
+                       Ubuntu 24.04 x86_64 custom GPT layout (local bundle required):
+                       [--root-size SIZE]          (required for custom layout; min 8GiB)
+                       [--boot-size SIZE|0]        (optional separate /boot)
+                       [--efi-size SIZE]           (UEFI only; default 512MiB)
+                       [--data-size SIZE|rest]      (optional data partition)
+                       [--data-mount /PATH]         (default /data)
+                       SIZE: integer MiB/GiB/TiB or MB/GB/TB; M/G/T mean MiB/GiB/TiB.
+
        Manual:         https://github.com/bin456789/reinstall
 
 EOF
@@ -3638,7 +3646,8 @@ build_extra_cmdline() {
     for key in confhome hold force_boot_mode force_cn cloud_image no_cloud_kernel main_disk \
         force_old_windows_setup no_auto_drivers no_lockout_threshold \
         elts deb_mirror \
-        username ssh_port rdp_port web_port web_path allow_ping; do
+        username ssh_port rdp_port web_port web_path allow_ping \
+        custom_partition part_root_size part_boot_size part_efi_size part_data_size part_data_mount; do
         value=${!key}
         if [ -n "$value" ]; then
             is_need_quote "$value" &&
@@ -4494,7 +4503,12 @@ mod_initrd() {
     zcat /reinstall-initrd | cpio -idm \
         $(is_in_windows && echo --nonmatching 'dev/console' --nonmatching 'dev/null')
 
-    curl -Lo $initrd_dir/trans.sh $confhome/trans.sh
+    if [ "${custom_partition:-0}" = 1 ]; then
+        # Embed the matching local implementation; never mix in upstream trans.sh.
+        cp_embed_installer "$custom_bundle_dir" "$initrd_dir"
+    else
+        curl -Lo $initrd_dir/trans.sh $confhome/trans.sh
+    fi
     if ! grep -iq "$SCRIPT_VERSION" $initrd_dir/trans.sh; then
         error_and_exit "
 This script is outdated, please download reinstall.sh again.
@@ -4991,6 +5005,7 @@ for o in ci installer debug minimal no-cloud-kernel no-auto-drivers allow-ping f
     commit: \
     frpc-conf: frpc-config: \
     target-disk: \
+    root-size: boot-size: efi-size: data-size: data-mount: \
     force-boot-mode: \
     force-old-windows-setup:; do
     [ -n "$long_opts" ] && long_opts+=,
@@ -5269,6 +5284,17 @@ EOF
         force_old_windows_setup=$2
         shift 2
         ;;
+    --root-size | --boot-size | --efi-size | --data-size | --data-mount)
+        custom_partition=1
+        case "$1" in
+        --root-size) part_root_size=$2 ;;
+        --boot-size) part_boot_size=$2 ;;
+        --efi-size) part_efi_size=$2 ;;
+        --data-size) part_data_size=$2 ;;
+        --data-mount) part_data_mount=$2 ;;
+        esac
+        shift 2
+        ;;
     --target-disk)
         xda=${2##*/dev/}
         if ! [ -b "/dev/$xda" ]; then
@@ -5323,6 +5349,36 @@ done
 
 # 检查必须的参数
 verify_os_args
+
+if [ "${custom_partition:-0}" = 1 ]; then
+    custom_bundle_dir=$(dirname "$THIS_SCRIPT")
+    for file in partition-layout.sh trans.sh UPSTREAM_COMMIT; do
+        [ -f "$custom_bundle_dir/$file" ] || error_and_exit "Custom layout needs the complete local bundle: missing $file"
+    done
+    # shellcheck source=partition-layout.sh
+    # shellcheck disable=SC1091
+    . "$custom_bundle_dir/partition-layout.sh"
+    if [ "$CUSTOM_PARTITION_API" != 1 ] ||
+        ! grep -qx '# CUSTOM_PARTITION_API=1' "$custom_bundle_dir/trans.sh"; then
+        error_and_exit 'Custom partition module/installer API mismatch.'
+    fi
+    cp_validate || error_and_exit 'Invalid custom partition options.'
+    if [ "$distro" != ubuntu ] || [ "$releasever" != 24.04 ] ||
+        [ "$basearch" != x86_64 ] || is_force_use_installer || is_in_windows; then
+        error_and_exit 'Custom layout currently supports Linux to Ubuntu 24.04 x86_64 cloud-image installation only.'
+    fi
+    if ! is_efi && [ -n "${part_efi_size:-}" ]; then
+        error_and_exit '--efi-size is only valid in UEFI mode.'
+    fi
+    # Pin upstream auxiliary files to the exact base used for this bundle.
+    custom_upstream_commit=$(cat "$custom_bundle_dir/UPSTREAM_COMMIT")
+    [[ "$custom_upstream_commit" =~ ^[0-9a-f]{40}$ ]] || error_and_exit 'Invalid UPSTREAM_COMMIT.'
+    if [[ "$confhome" = https://cnb.cool/* ]]; then
+        confhome="https://cnb.cool/bin456789/reinstall/-/git/raw/$custom_upstream_commit"
+    else
+        confhome="https://raw.githubusercontent.com/bin456789/reinstall/$custom_upstream_commit"
+    fi
+fi
 
 # 用户名密码
 if ! is_netboot_xyz; then

@@ -6,6 +6,7 @@ on:
       - "reinstall.*"
 jobs:
   run:
+    if: github.repository == 'bin456789/reinstall'
     name: 运行主程序
     strategy:
       matrix:
