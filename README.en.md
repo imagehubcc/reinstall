@@ -32,3 +32,10 @@ Sizes accept positive integers in MiB/GiB/TiB, MB/GB/TB, or binary aliases M/G/T
 Custom layouts do not support other OS versions, ARM, Windows entry points, ISO installation, LVM, software RAID, array creation or reconfiguration, encryption, or preserving existing partitions. Without custom options, the original upstream flow remains available.
 
 See the [Chinese README](README.md), [partition and maintenance guide](CUSTOM-PARTITIONS.md), [validation scope](VPS-VALIDATION.md), and [upstream documentation](https://github.com/bin456789/reinstall#readme).
+
+## Upstream synchronization
+
+The daily workflow checks upstream at 01:23 UTC. A merged candidate must pass offline checks,
+loop-image tests and complete BIOS/UEFI QEMU reinstall/boot tests before main is advanced.
+Conflicts, failures or concurrent main changes stop publication and create/update an assigned GitHub Issue.
+Tests use GitHub-hosted runners, with no server credentials. Manual verification is available in Actions.
