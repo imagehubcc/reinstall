@@ -1,0 +1,162 @@
+name: Verified upstream sync
+on:
+  schedule:
+    - cron: '23 1 * * *'
+  workflow_dispatch:
+    inputs:
+      verify:
+        description: Run all tests even if upstream is unchanged
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: verified-upstream-sync
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.repository == 'imagehubcc/reinstall' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      base: ${{ steps.candidate.outputs.base }}
+      candidate: ${{ steps.candidate.outputs.candidate }}
+      updated: ${{ steps.candidate.outputs.updated }}
+      test_required: ${{ steps.candidate.outputs.test_required }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - id: candidate
+        env:
+          VERIFY: ${{ inputs.verify || false }}
+        run: |
+          args=()
+          if [[ "$VERIFY" == true ]]; then args+=(--verify); fi
+          python3 tools/upstream_sync.py --out "$RUNNER_TEMP/candidate" "${args[@]}"
+      - if: steps.candidate.outputs.test_required == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-candidate
+          path: ${{ runner.temp }}/candidate/
+          retention-days: 7
+      - run: |
+          echo 'Daily check finished. Full tests run only for updates or manual verification.' >> "$GITHUB_STEP_SUMMARY"
+  offline:
+    needs: prepare
+    if: needs.prepare.outputs.test_required == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: upstream-candidate
+          path: ${{ runner.temp }}/candidate
+      - env:
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+        run: |
+          git fetch "$RUNNER_TEMP/candidate/candidate.bundle" refs/heads/sync-candidate
+          test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE"
+          git checkout --detach "$CANDIDATE"
+      - run: sudo apt-get update && sudo apt-get install -y busybox shellcheck parted e2fsprogs dosfstools util-linux
+      - run: |
+          bash -n reinstall.sh
+          bash -n trans.sh
+          busybox ash -n trans.sh
+          shellcheck -s bash partition-layout.sh partition-plan.sh tests/loop-layout.sh
+          python3 tests/test_partitions.py
+          python3 tests/test_upstream_sync.py
+          PARTITION_SHELL='busybox ash' python3 tests/test_partitions.py
+          python3 tools/check-upstream.py
+          python3 tools/build-bundle.py
+          sudo bash tests/loop-layout.sh
+  install-boot:
+    needs: prepare
+    if: needs.prepare.outputs.test_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware: [bios, uefi]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: harness
+      - uses: actions/download-artifact@v4
+        with:
+          name: upstream-candidate
+          path: ${{ runner.temp }}/candidate
+      - env:
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+        run: |
+          git clone "$RUNNER_TEMP/candidate/candidate.bundle" --branch sync-candidate candidate
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE"
+      - run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf cloud-image-utils openssh-client
+      - name: Full reinstall and firmware boot
+        env:
+          FIRMWARE: ${{ matrix.firmware }}
+        run: |
+          python3 harness/tests/install_boot.py --firmware "$FIRMWARE" --source "$PWD/candidate" --work "$RUNNER_TEMP/install-boot"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-boot-${{ matrix.firmware }}
+          path: |
+            ${{ runner.temp }}/install-boot/*.log
+            ${{ runner.temp }}/install-boot/result.json
+          if-no-files-found: ignore
+          retention-days: 7
+  publish:
+    needs: [prepare, offline, install-boot]
+    if: needs.prepare.outputs.updated == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: upstream-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Publish only the tested commit, without force
+        env:
+          BASE: ${{ needs.prepare.outputs.base }}
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+        run: |
+          git fetch "$RUNNER_TEMP/candidate/candidate.bundle" refs/heads/sync-candidate
+          test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE"
+          git merge-base --is-ancestor "$BASE" "$CANDIDATE"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE" || { echo 'main changed during testing; rerun against the new main.'; exit 1; }
+          git push origin "$CANDIDATE:refs/heads/main"
+          echo "Published tested upstream merge: $CANDIDATE" >> "$GITHUB_STEP_SUMMARY"
+  notify:
+    needs: [prepare, offline, install-boot, publish]
+    if: always() && github.repository == 'imagehubcc/reinstall' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const fs = require('fs');
+            const fn = new (Object.getPrototypeOf(async function(){}).constructor)('github', 'context', fs.readFileSync('tools/notify-upstream-sync.js', 'utf8'));
+            await fn(github, context);

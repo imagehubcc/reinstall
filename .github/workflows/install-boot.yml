@@ -1,0 +1,32 @@
+name: Full install and boot
+on:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  install-boot:
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware: [bios, uefi]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf cloud-image-utils openssh-client
+      - name: Reinstall and boot in isolated QEMU
+        env:
+          FIRMWARE: ${{ matrix.firmware }}
+        run: python3 tests/install_boot.py --firmware "$FIRMWARE" --source "$PWD" --work "$RUNNER_TEMP/install-boot"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-boot-${{ matrix.firmware }}
+          path: |
+            ${{ runner.temp }}/install-boot/*.log
+            ${{ runner.temp }}/install-boot/result.json
+          if-no-files-found: ignore
+          retention-days: 7
