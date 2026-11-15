@@ -1221,8 +1221,13 @@ unix2dos() {
 insert_into_file() {
     local file=$1
     local location=$2
-    local regex_to_find=$3
-    shift 3
+    if [ "$location" = head ]; then
+        # shift 3 会报错
+        shift 2
+    else
+        local regex_to_find=$3
+        shift 3
+    fi
 
     if ! [ -f "$file" ]; then
         error_and_exit "File not found: $file"
@@ -1234,9 +1239,12 @@ insert_into_file() {
     fi
 
     if [ "$location" = head ]; then
+        local bak
         bak=$(mktemp)
-        cp $file $bak
-        cat - $bak >$file
+        if ! { cp "$file" "$bak" && cat - "$bak" >"$file"; }; then
+            error_and_exit "Failed to insert into file: $file"
+        fi
+        rm -f "$bak"
     else
         line_num=$(grep "$@" -n "$regex_to_find" "$file" | cut -d: -f1)
 
@@ -3252,7 +3260,9 @@ create_part() {
         [ -n "$dev_grub" ] && fill_zero "$dev_grub"   # bios_grub
         [ -n "$dev_empty" ] && fill_zero "$dev_empty" # 官方安装有这个分区
         mkfs.ext4 -F $ext4_opts "$dev_os"             # os + installer
-    elif is_use_cloud_image; then
+    # 云镜像或者 dd qcow2
+    elif is_use_cloud_image ||
+        { [ "$distro" = dd ] && [ "$img_type" = qemu ]; }; then
         installer_part_size="$(get_cloud_image_part_size)"
         # 这几个系统不使用dd，而是复制文件
         if [ "$distro" = centos ] || [ "$distro" = almalinux ] || [ "$distro" = rocky ] ||
@@ -3292,8 +3302,9 @@ create_part() {
             :                                           # os 用目标系统的格式化工具
             mkfs.ext4 -F "$dev_installer"               # installer
         else
-            # 使用 dd qcow2
-            # fedora debian opensuse arch gentoo
+            # 以下都用 dd qcow2
+            # 1. 云镜像安装 fedora debian opensuse arch gentoo
+            # 2. dd 模式安装 qcow2 镜像
             parted /dev/$xda -s -- \
                 mklabel gpt \
                 mkpart '" "' ext4 1MiB -$installer_part_size \
@@ -8961,15 +8972,33 @@ trans() {
         apk add util-linux
     fi
 
-    # dd qemu 切换成云镜像模式，暂时没用到
-    # shellcheck disable=SC2154
-    if [ "$distro" = "dd" ] && [ "$img_type" = "qemu" ]; then
-        # 移到 reinstall.sh ?
-        distro=any
-        cloud_image=1
-    fi
-
-    if is_use_cloud_image; then
+    if [ "$distro" = "dd" ]; then
+        # shellcheck disable=SC2154
+        case "$img_type" in
+        raw | qemu)
+            case "$img_type" in
+            raw)
+                dd_raw_with_extract
+                ;;
+            qemu)
+                create_part
+                download_qcow
+                dd_qcow
+                ;;
+            esac
+            if false; then
+                # linux 扩容后无法轻易缩小，例如 xfs
+                # windows 扩容在 windows 下完成
+                resize_after_install_cloud_image
+            fi
+            if [ -d /configs/cloud-data ]; then
+                modify_os_on_disk nocloud
+            else
+                modify_os_on_disk windows
+            fi
+            ;;
+        esac
+    elif is_use_cloud_image; then
         case "$img_type" in
         qemu)
             create_part
@@ -8996,24 +9025,6 @@ trans() {
             dd_raw_with_extract
             resize_after_install_cloud_image
             modify_os_on_disk linux
-            ;;
-        esac
-    elif [ "$distro" = "dd" ]; then
-        case "$img_type" in
-        raw)
-            dd_raw_with_extract
-            if false; then
-                # linux 扩容后无法轻易缩小，例如 xfs
-                # windows 扩容在 windows 下完成
-                resize_after_install_cloud_image
-            fi
-            if [ -d /configs/cloud-data ]; then
-                modify_os_on_disk nocloud
-            else
-                modify_os_on_disk windows
-            fi
-            ;;
-        qemu) # dd qemu 不可能到这里，因为上面已处理
             ;;
         esac
     else
