@@ -73,9 +73,12 @@ cp_validate() {
         ;;
     esac
     if [ "$p_root" = rest ] && [ "$p_data" = rest ]; then
-        [ -z "${part_root_size:-}" ] || { cp_fail 'Root and data cannot both use rest.'; return 1; }
-        # A data-only request gets a useful, documented default root size.
-        p_root=20480
+        if [ -z "${part_root_size:-}" ]; then
+            cp_fail 'Data uses rest: specify --root-size SIZE to set the root partition size.'
+        else
+            cp_fail 'Root and data cannot both use rest.'
+        fi
+        return 1
     fi
     if [ "$p_data" != 0 ]; then
         part_data_mount=${part_data_mount:-/data}

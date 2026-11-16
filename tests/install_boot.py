@@ -24,7 +24,7 @@ LAYOUTS = {
     'boot-only': '',
     'root-rest': '--root-size rest',
     'auto-root-data': '--data-size 1GiB',
-    'data-rest': '--data-size rest',
+    'mount-only': '--root-size 16GiB --data-mount /data',
 }
 
 
@@ -36,11 +36,11 @@ class VM:
     def __init__(self, firmware, source, work, layout):
         self.firmware, self.source, self.work = firmware, source.resolve(), work.resolve()
         self.layout = layout
-        self.has_data = layout in ('fixed-root', 'auto-root-data', 'data-rest')
+        self.has_data = layout in ('fixed-root', 'auto-root-data', 'mount-only')
         self.marker = '/data/.ci-marker' if self.has_data else '/root/.ci-marker'
         root_start = 2561 if firmware == 'uefi' else 2050
         root_end = {'fixed-root': root_start + 16384,
-                    'data-rest': root_start + 20480,
+                    'mount-only': root_start + 16384,
                     'auto-root-data': 32767 - 1024}.get(layout, 32767)
         self.expected_root = (root_end - root_start) * 1048576
         self.expected_data = (32767 - root_end) * 1048576

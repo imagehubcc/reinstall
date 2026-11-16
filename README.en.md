@@ -48,8 +48,8 @@ Omitted options use these defaults:
 
 - Boot/EFI-only or explicit root `rest`: remaining space goes to root, with no data partition.
 - Fixed data size without a root size: root receives the remaining space after data.
-- Data `rest` without a root size: root defaults to 20GiB, with the remainder assigned to data.
-- A data mount point without a data size implies data `rest`; root defaults to 20GiB if omitted.
+- Data `rest` requires an explicit fixed `--root-size SIZE`; omission produces a message asking you to supply it, rather than choosing a size for you.
+- A data mount point without a data size implies data `rest` and likewise requires an explicit fixed root size.
 - Explicit root `rest` plus data `rest`, or data `0` plus a mount point, is rejected as conflicting. Invalid values and insufficient capacity are also rejected.
 
 Sizes accept positive integers in MiB/GiB/TiB, MB/GB/TB, or binary aliases M/G/T. When both root and data have fixed sizes, extra space stays unallocated.

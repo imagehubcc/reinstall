@@ -36,7 +36,7 @@ update_part() {
 }
 fill_zero() { dd if=/dev/zero of="$1" bs=1M count=1 status=none; }
 for mode in efi bios; do
-for layout in fixed-root boot-only root-rest auto-root-data data-rest mount-only; do
+for layout in fixed-root boot-only root-rest auto-root-data mount-only; do
     truncate -s 32G "$image"
     loop_device=$(losetup --find --show --partscan "$image")
     [[ "$loop_device" == /dev/loop* ]] || exit 1
@@ -49,11 +49,9 @@ for layout in fixed-root boot-only root-rest auto-root-data data-rest mount-only
         boot-only) : ;;
         root-rest) part_root_size=rest ;;
         auto-root-data) part_data_size=1GiB ;;
-        data-rest) part_data_size=rest ;;
-        mount-only) part_data_mount=/data part_boot_size=0 ;;
+        mount-only) part_root_size=8GiB part_data_mount=/data part_boot_size=0 ;;
     esac
     echo "Testing $mode / $layout"
-    # 32GiB also accommodates the default 20GiB root for data-only requests.
     cp_plan 32768 "$mode" 2048
     cp_create
     mkfs.ext4 -F "$dev_os"

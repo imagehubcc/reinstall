@@ -88,8 +88,8 @@ SIZE 支持正整数 `MiB/GiB/TiB`、十进制 `MB/GB/TB`，以及二进制别�
 
 - 只指定 boot、EFI 或 `--root-size rest`：根分区使用其余空间，不创建 data。
 - 指定固定大小的 data，省略 root 大小：根分区使用扣除 data 后的其余空间。
-- 指定 `--data-size rest`，省略 root 大小：root 默认 20GiB，其余空间给 data。
-- 只指定 `--data-mount /PATH`：按 data 使用 `rest` 处理；未指定 root 时默认 20GiB。
+- 指定 `--data-size rest` 时，必须用 `--root-size SIZE` 明确根分区大小；省略会提示补充参数，不会擅自分配。
+- 指定 `--data-mount /PATH`、省略 data 大小：按 data 使用 `rest` 处理，同样要求明确根分区大小。
 - 显式指定 root 和 data 同时为 `rest`，或 `--data-size 0` 同时指定挂载点，属于矛盾参数，会报错。容量不足和非法值也会拒绝，不会静默忽略。
 
 root、data 均为固定大小时，多余空间保持未分配；`df` 显示的文件系统容量会小于分区大小。

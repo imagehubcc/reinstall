@@ -91,8 +91,6 @@ echo "$p_root_start:$p_root_initial_end:$p_root_end:$p_data"
     def test_incomplete_options_have_consistent_defaults(self):
         cases = [
             ('part_data_size=1GiB', 'rest:31743:32767:/data'),
-            ('part_data_size=rest', '20480:20482:32767:/data'),
-            ('part_data_mount=/srv/storage', '20480:20482:32767:/srv/storage'),
             ('part_root_size=8GiB part_data_mount=/data', '8192:8194:32767:/data'),
             ('part_root_size=rest part_data_size=1GiB', 'rest:31743:32767:/data'),
             ('part_boot_size=0 part_data_size=0', 'rest:32767:32767:'),
@@ -103,6 +101,8 @@ echo "$p_root_start:$p_root_initial_end:$p_root_end:$p_data"
 cp_plan 32768 bios 2048
 echo "$p_root:$p_root_end:$p_data_end:${part_data_mount:-}"
 ''', expected)
+        self.bad('part_data_size=rest; cp_validate', 'specify --root-size SIZE')
+        self.bad('part_data_mount=/srv/storage; cp_validate', 'specify --root-size SIZE')
         self.bad('part_root_size=rest part_data_size=rest; cp_validate', 'both use rest')
         self.bad('part_root_size=rest part_data_mount=/data; cp_validate', 'both use rest')
         self.bad('part_data_size=0 part_data_mount=/data; cp_validate', 'conflicts')
