@@ -19,6 +19,13 @@ import urllib.request
 
 IMAGE_ROOT = 'https://cloud-images.ubuntu.com/releases/noble/release/'
 IMAGE_NAME = 'ubuntu-24.04-server-cloudimg-amd64.img'
+LAYOUTS = {
+    'fixed-root': '--root-size 16GiB --data-size rest',
+    'boot-only': '',
+    'root-rest': '--root-size rest',
+    'auto-root-data': '--data-size 1GiB',
+    'data-rest': '--data-size rest',
+}
 
 
 def run(args, **kwargs):
@@ -26,8 +33,17 @@ def run(args, **kwargs):
 
 
 class VM:
-    def __init__(self, firmware, source, work):
+    def __init__(self, firmware, source, work, layout):
         self.firmware, self.source, self.work = firmware, source.resolve(), work.resolve()
+        self.layout = layout
+        self.has_data = layout in ('fixed-root', 'auto-root-data', 'data-rest')
+        self.marker = '/data/.ci-marker' if self.has_data else '/root/.ci-marker'
+        root_start = 2561 if firmware == 'uefi' else 2050
+        root_end = {'fixed-root': root_start + 16384,
+                    'data-rest': root_start + 20480,
+                    'auto-root-data': 32767 - 1024}.get(layout, 32767)
+        self.expected_root = (root_end - root_start) * 1048576
+        self.expected_data = (32767 - root_end) * 1048576
         self.process = None
         self.last_boot_id = None
         self.work.mkdir(parents=True, exist_ok=True)
@@ -147,9 +163,10 @@ test "$(findmnt -n -o SOURCE /)" = /dev/vda1
 cd /root/ci-source
 trap 'echo CI_INSTALL_FAILED' ERR
 bash reinstall.sh ubuntu 24.04 --username root --ssh-key /root/ci-source/ci-key.pub \
-  --target-disk /dev/vda --root-size 16GiB --boot-size 2GiB --data-size rest --hold 2
+  --target-disk /dev/vda --boot-size 2GiB __LAYOUT_OPTIONS__ --hold 2
 echo CI_PREPARE_DONE
 '''
+        script = script.replace('__LAYOUT_OPTIONS__', LAYOUTS[self.layout])
         self.ssh('cat >/root/ci-prepare.sh', script.encode())
         self.ssh('nohup bash /root/ci-prepare.sh >/root/ci-prepare.log 2>&1 </dev/null &')
         self.wait('cat /root/ci-prepare.log', 'CI_PREPARE_DONE', 900)
@@ -164,29 +181,28 @@ echo CI_PREPARE_DONE
         code, log = self.ssh('cat /reinstall.log', timeout=120)
         (self.work / 'installer.log').write_text(log, encoding='utf-8')
         # Validate filesystem and UUID layout before allowing installed OS to boot.
-        self.ssh('''set -e
+        self.ssh(f'''set -e
 test "$(blockdev --getsize64 /dev/vda2)" = 2147483648
-test "$(blockdev --getsize64 /dev/vda3)" = 17179869184
+test "$(blockdev --getsize64 /dev/vda3)" = {self.expected_root}
 cat /os/etc/fstab
 chroot /os grub-script-check /boot/grub/grub.cfg
-echo ci-persistence-marker >/os/data/.ci-marker
+echo ci-persistence-marker >/os{self.marker}
 sync
 ''')
         self.ssh('nohup sh -c "sleep 2; reboot" >/dev/null 2>&1 </dev/null &')
         time.sleep(15)
 
     def verify(self, phase):
-        output = self.wait('test ! -f /etc/alpine-release && test -f /data/.ci-marker && echo INSTALLED_READY',
+        output = self.wait(f'test ! -f /etc/alpine-release && test -f {self.marker} && echo INSTALLED_READY',
                            'INSTALLED_READY', 900)
         mode_check = 'test -d /sys/firmware/efi' if self.firmware == 'uefi' else 'test ! -d /sys/firmware/efi'
         script = f'''set -e
 {mode_check}
 test "$(findmnt -n -o SOURCE /)" = /dev/vda3
 test "$(findmnt -n -o SOURCE /boot)" = /dev/vda2
-test "$(findmnt -n -o SOURCE /data)" = /dev/vda4
-test "$(blockdev --getsize64 /dev/vda3)" = 17179869184
-grep -qx ci-persistence-marker /data/.ci-marker
-test "$(findmnt -n -o FSTYPE /data)" = ext4
+test "$(blockdev --getsize64 /dev/vda3)" = {self.expected_root}
+grep -qx ci-persistence-marker {self.marker}
+test "$(findmnt -n -o FSTYPE /)" = ext4
 systemctl is-active ssh
 lsblk -b -o NAME,SIZE,FSTYPE,MOUNTPOINTS
 cat /etc/fstab
@@ -201,9 +217,21 @@ boot_uuid=$(lsblk -dnro UUID /dev/vda2)
 grep -q -- "--set=root $boot_uuid" /boot/efi/EFI/ubuntu/grub.cfg
 efibootmgr
 '''
+        if self.has_data:
+            script += f'''test "$(findmnt -n -o SOURCE /data)" = /dev/vda4
+test "$(findmnt -n -o FSTYPE /data)" = ext4
+test "$(blockdev --getsize64 /dev/vda4)" = {self.expected_data}
+'''
+        else:
+            script += '''test ! -b /dev/vda4
+if grep -q ' /data ' /etc/fstab; then exit 1; fi
+'''
+        # Verify filesystem growth too, not just the partition table. The ext4
+        # metadata overhead is small; a missing installer-space reclaim is not.
+        script += f'''fs_bytes=$(df -B1 --output=size / | tail -1)
+test "$fs_bytes" -gt {self.expected_root - 1073741824}
+'''
         self.ssh(script, timeout=90)
-        expected_data = (32767 - (18945 if self.firmware == 'uefi' else 18434)) * 1048576
-        self.ssh(f'test "$(blockdev --getsize64 /dev/vda4)" = {expected_data}')
         _, boot_id = self.ssh('cat /proc/sys/kernel/random/boot_id')
         boot_id = boot_id.strip()
         if boot_id == self.last_boot_id:
@@ -241,11 +269,12 @@ efibootmgr
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--firmware', choices=['bios', 'uefi'], required=True)
+    parser.add_argument('--layout', choices=list(LAYOUTS), default='fixed-root')
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--work', type=Path, required=True)
     args = parser.parse_args()
-    vm = VM(args.firmware, args.source, args.work)
-    result = {'firmware': args.firmware, 'passed': False}
+    vm = VM(args.firmware, args.source, args.work, args.layout)
+    result = {'firmware': args.firmware, 'layout': args.layout, 'passed': False}
     try:
         vm.setup()
         vm.start(seed=True)

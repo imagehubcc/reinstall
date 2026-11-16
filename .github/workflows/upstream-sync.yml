@@ -83,6 +83,7 @@ jobs:
       fail-fast: false
       matrix:
         firmware: [bios, uefi]
+        layout: [fixed-root, boot-only, root-rest, auto-root-data, data-rest]
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     steps:
@@ -107,12 +108,13 @@ jobs:
       - name: Full reinstall and firmware boot
         env:
           FIRMWARE: ${{ matrix.firmware }}
+          LAYOUT: ${{ matrix.layout }}
         run: |
-          python3 harness/tests/install_boot.py --firmware "$FIRMWARE" --source "$PWD/candidate" --work "$RUNNER_TEMP/install-boot"
+          python3 harness/tests/install_boot.py --firmware "$FIRMWARE" --layout "$LAYOUT" --source "$PWD/candidate" --work "$RUNNER_TEMP/install-boot"
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: install-boot-${{ matrix.firmware }}
+          name: install-boot-${{ matrix.firmware }}-${{ matrix.layout }}
           path: |
             ${{ runner.temp }}/install-boot/*.log
             ${{ runner.temp }}/install-boot/result.json

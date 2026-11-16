@@ -78,6 +78,59 @@ cp_plan 1048576 efi 2048
 echo "$((p_root_end - p_root_start))"
 ''', str(mib))
 
+    def test_auto_root_and_explicit_rest(self):
+        for mode, start in [('efi', 2561), ('bios', 2050)]:
+            for root in ['', 'part_root_size=rest']:
+                with self.subTest(mode=mode, root=root):
+                    self.ok(f'''{root}
+part_boot_size=2GiB
+cp_plan 32768 {mode} 2048
+echo "$p_root_start:$p_root_initial_end:$p_root_end:$p_data"
+''', f'{start}:30719:32767:0')
+
+    def test_incomplete_options_have_consistent_defaults(self):
+        cases = [
+            ('part_data_size=1GiB', 'rest:31743:32767:/data'),
+            ('part_data_size=rest', '20480:20482:32767:/data'),
+            ('part_data_mount=/srv/storage', '20480:20482:32767:/srv/storage'),
+            ('part_root_size=8GiB part_data_mount=/data', '8192:8194:32767:/data'),
+            ('part_root_size=rest part_data_size=1GiB', 'rest:31743:32767:/data'),
+            ('part_boot_size=0 part_data_size=0', 'rest:32767:32767:'),
+        ]
+        for options, expected in cases:
+            with self.subTest(options=options):
+                self.ok(options + '''; cp_validate; cp_plan 32768 bios 2048
+cp_plan 32768 bios 2048
+echo "$p_root:$p_root_end:$p_data_end:${part_data_mount:-}"
+''', expected)
+        self.bad('part_root_size=rest part_data_size=rest; cp_validate', 'both use rest')
+        self.bad('part_root_size=rest part_data_mount=/data; cp_validate', 'both use rest')
+        self.bad('part_data_size=0 part_data_mount=/data; cp_validate', 'conflicts')
+        self.bad('part_boot_size=2GiB; cp_plan 11000 efi 2048', 'temporary image')
+        self.bad('part_data_size=30GiB; cp_plan 32768 bios 2048', '8GiB remains')
+
+    def test_grow_root_after_removing_installer(self):
+        for fsck_code in [0, 1, 4]:
+            code = f'''
+part_boot_size=2GiB part_data_size=1GiB xda=vda dev_os=/dev/vda3
+cp_plan 32768 bios 2048
+apk() {{ :; }}
+update_part() {{ :; }}
+parted() {{ echo "PARTED $*"; }}
+e2fsck() {{ echo CHECK; return {fsck_code}; }}
+resize2fs() {{ echo "GROW $*"; }}
+xda() {{ echo "vda$1"; }}
+'''
+            if fsck_code == 4:
+                result = self.bad(code + 'cp_finish_partitions', 'filesystem check failed')
+                self.assertNotIn('resizepart', result.stdout)
+                self.assertNotIn('GROW', result.stdout)
+            else:
+                trace = self.ok(FORMATTER_MOCKS + code + 'cp_finish_partitions')
+                self.assertLess(trace.index('rm 4'), trace.index('resizepart 3 31743MiB'))
+                self.assertLess(trace.index('resizepart'), trace.index('GROW /dev/vda3'))
+                self.assertLess(trace.index('GROW'), trace.index('mkpart DATA'))
+
     def test_bios_no_boot_fixed_data(self):
         self.ok('''
 part_root_size=300GiB part_data_size=100GiB
@@ -100,8 +153,7 @@ echo "$p_data:$p_boot_num:$p_root_num:$p_root_end:$p_data_end"
     def test_validates_roles(self):
         for options in ['part_root_size=7GiB', 'part_root_size=8GiB part_boot_size=100MiB',
                         'part_root_size=8GiB part_efi_size=50MiB',
-                        'part_root_size=8GiB part_data_size=500MiB',
-                        'part_root_size=8GiB part_data_mount=/data']:
+                        'part_root_size=8GiB part_data_size=500MiB']:
             self.bad(options + '; cp_validate')
         self.bad('part_root_size=8GiB part_efi_size=512MiB; cp_plan 16384 bios 2048', 'UEFI')
 

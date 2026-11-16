@@ -9,7 +9,7 @@
 
 ## 功能
 
-- 自定义根分区、可选独立 `/boot` 和数据分区大小。
+- 自定义根分区、可选独立 `/boot` 和数据分区大小，支持根分区自动使用剩余空间。
 - 数据分区支持固定大小或 `rest` 使用剩余空间，默认挂载到 `/data`。
 - 自动识别 BIOS/UEFI：UEFI 默认创建 512MiB EFI 分区；BIOS 创建 1MiB BIOS-GRUB 保留分区。
 - 清盘前检查参数与容量，自动配置 UUID 挂载和引导。
@@ -65,18 +65,34 @@ cat /os/etc/fstab
 
 确认后执行 `reboot` 进入新系统。省略 `--hold 2` 时，安装结束后自动重启。
 
+只设置独立 boot，剩余空间全部给根分区（账号、密码和 SSH 端口参数可按需添加）：
+
+```sh
+sudo bash reinstall.sh ubuntu 24.04 --target-disk /dev/nvme0n1 --boot-size 2GiB
+```
+
+也可显式添加 `--root-size rest`；不指定数据分区参数就不创建数据分区。
+
 ## 分区参数
 
 | 参数 | 说明 |
 | --- | --- |
-| `--root-size SIZE` | 自定义模式必填，至少 8GiB |
+| `--root-size SIZE` 或 `--root-size rest` | 可选，固定大小至少 8GiB；省略时自动分配，规则见下 |
 | `--boot-size SIZE` | 可选独立 `/boot`，至少 512MiB；省略或设为 `0` 则不单独分区 |
-| `--data-size SIZE` 或 `--data-size rest` | 可选数据分区，至少 1GiB；`rest` 使用剩余可用空间 |
+| `--data-size SIZE` 或 `--data-size rest` | 可选数据分区，至少 1GiB；`rest` 使用剩余可用空间，`0` 表示不创建 |
 | `--data-mount /PATH` | 数据分区挂载点，默认 `/data` |
 | `--efi-size SIZE` | 可选 UEFI 大小覆盖，默认 512MiB，至少 100MiB；通常无需指定 |
 
 SIZE 支持正整数 `MiB/GiB/TiB`、十进制 `MB/GB/TB`，以及二进制别名 `M/G/T`。十进制大小向上取整到 MiB。
-固定大小分配后多余空间保持未分配；`df` 显示的文件系统容量会小于分区大小。
+参数可按需省略，默认规则如下：
+
+- 只指定 boot、EFI 或 `--root-size rest`：根分区使用其余空间，不创建 data。
+- 指定固定大小的 data，省略 root 大小：根分区使用扣除 data 后的其余空间。
+- 指定 `--data-size rest`，省略 root 大小：root 默认 20GiB，其余空间给 data。
+- 只指定 `--data-mount /PATH`：按 data 使用 `rest` 处理；未指定 root 时默认 20GiB。
+- 显式指定 root 和 data 同时为 `rest`，或 `--data-size 0` 同时指定挂载点，属于矛盾参数，会报错。容量不足和非法值也会拒绝，不会静默忽略。
+
+root、data 均为固定大小时，多余空间保持未分配；`df` 显示的文件系统容量会小于分区大小。
 BIOS 下显式传入 `--efi-size` 会在准备阶段报错退出，不会继续清盘；该参数不会改变固件模式。
 
 ## 自动同步上游

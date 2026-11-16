@@ -4,7 +4,7 @@ set -eu
 . "$(dirname "$0")/partition-layout.sh"
 disk_size='' boot_mode='' installer_size=2GiB
 usage() {
-    echo 'Usage: sh partition-plan.sh --disk-size 1TiB --boot-mode efi|bios --root-size 300GiB [--boot-size 2GiB] [--efi-size 512MiB] [--data-size rest|SIZE] [--data-mount /data] [--installer-size 2GiB]'
+    echo 'Usage: sh partition-plan.sh --disk-size 1TiB --boot-mode efi|bios [--root-size SIZE|rest] [--boot-size 2GiB] [--efi-size 512MiB] [--data-size rest|SIZE] [--data-mount /data] [--installer-size 2GiB]'
 }
 while [ "$#" -gt 0 ]; do
     case "$1" in

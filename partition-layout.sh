@@ -45,8 +45,14 @@ cp_size_mib() {
 }
 
 cp_validate() {
-    p_root=$(cp_size_mib "${part_root_size:-}") || return 1
-    [ "$p_root" -ge 8192 ] || { cp_fail 'Root must be at least 8GiB.'; return 1; }
+    # Infer only omitted values; explicit competing "rest" requests are errors.
+    case "${part_root_size:-}" in
+    '' | rest) p_root=rest ;;
+    *)
+        p_root=$(cp_size_mib "$part_root_size") || return 1
+        [ "$p_root" -ge 8192 ] || { cp_fail 'Root must be at least 8GiB.'; return 1; }
+        ;;
+    esac
     p_boot=0
     if [ -n "${part_boot_size:-}" ] && [ "$part_boot_size" != 0 ]; then
         p_boot=$(cp_size_mib "$part_boot_size") || return 1
@@ -56,8 +62,9 @@ cp_validate() {
     [ "$p_efi" -ge 100 ] || { cp_fail 'EFI partition must be at least 100MiB.'; return 1; }
     p_data=0
     case "${part_data_size:-}" in
-    '')
-        [ -z "${part_data_mount:-}" ] || { cp_fail '--data-mount requires --data-size.'; return 1; }
+    '') [ -z "${part_data_mount:-}" ] || p_data=rest ;;
+    0)
+        [ -z "${part_data_mount:-}" ] || { cp_fail '--data-size 0 conflicts with --data-mount.'; return 1; }
         ;;
     rest) p_data=rest ;;
     *)
@@ -65,6 +72,11 @@ cp_validate() {
         [ "$p_data" -ge 1024 ] || { cp_fail 'Data partition must be at least 1GiB.'; return 1; }
         ;;
     esac
+    if [ "$p_root" = rest ] && [ "$p_data" = rest ]; then
+        [ -z "${part_root_size:-}" ] || { cp_fail 'Root and data cannot both use rest.'; return 1; }
+        # A data-only request gets a useful, documented default root size.
+        p_root=20480
+    fi
     if [ "$p_data" != 0 ]; then
         part_data_mount=${part_data_mount:-/data}
         # Restrict to ordinary absolute paths, safe for cmdline and fstab.
@@ -90,8 +102,8 @@ cp_check_target() {
 }
 
 # Pure planner. All endpoints are exclusive MiB boundaries; reserve 1MiB for GPT.
-# The installer occupies the tail temporarily. Data is created only after it is
-# removed, so "rest" also reclaims ALL of that temporary space.
+# The installer occupies the tail temporarily. After copying, remove it before
+# growing root and creating data, so either role can reclaim temporary space.
 cp_plan() {
     local disk_mib=$1 mode=$2 installer_mib=$3 cursor num
     cp_validate || return 1
@@ -123,7 +135,19 @@ cp_plan() {
     fi
     p_root_num=$num
     p_root_start=$cursor
-    p_root_end=$((cursor + p_root))
+    p_root_grow=0
+    if [ "$p_root" = rest ]; then
+        p_root_end=$((p_disk_end - p_data))
+        [ "$((p_root_end - p_root_start))" -ge 8192 ] || { cp_fail 'Less than 8GiB remains for root.'; return 1; }
+        p_root_grow=1
+    else
+        p_root_end=$((cursor + p_root))
+    fi
+    # The initial root must not overlap the still-needed image storage.
+    p_root_initial_end=$p_root_end
+    if [ "$p_root_grow" = 1 ] && [ "$p_root_initial_end" -gt "$p_installer_start" ]; then
+        p_root_initial_end=$p_installer_start
+    fi
     p_installer_num=$((num + 1))
     p_data_num=$p_installer_num
     p_data_start=$p_root_end
@@ -132,7 +156,10 @@ cp_plan() {
     rest) p_data_end=$p_disk_end ;;
     *) p_data_end=$((p_data_start + p_data)) ;;
     esac
-    [ "$p_root_end" -le "$p_installer_start" ] || { cp_fail 'Disk cannot fit root, boot and temporary image storage.'; return 1; }
+    [ "$p_root_initial_end" -le "$p_installer_start" ] &&
+        [ "$((p_root_initial_end - p_root_start))" -ge 8192 ] || {
+        cp_fail 'Disk cannot fit root, boot and temporary image storage (initial root needs 8GiB).'; return 1;
+    }
     [ "$p_data_end" -le "$p_disk_end" ] || { cp_fail 'Requested partitions exceed disk capacity.'; return 1; }
     if [ "$p_data" != 0 ]; then
         [ "$((p_data_end - p_data_start))" -ge 1024 ] || { cp_fail 'Less than 1GiB remains for data.'; return 1; }
@@ -150,6 +177,9 @@ cp_show_plan() {
         echo "$p_boot_num BOOT /boot $p_boot_start $p_boot_end ext4"
     fi
     echo "$p_root_num ROOT / $p_root_start $p_root_end ext4"
+    if [ "$p_root_initial_end" != "$p_root_end" ]; then
+        echo "ROOT initially ends at ${p_root_initial_end}MiB; grows after installer removal"
+    fi
     if [ "$p_data" != 0 ]; then
         echo "$p_data_num DATA $part_data_mount $p_data_start $p_data_end ext4 (created after installer removal)"
     fi
@@ -186,7 +216,7 @@ cp_create() {
         parted "/dev/$xda" -s -- mkpart BOOT ext4 "${p_boot_start}MiB" "${p_boot_end}MiB"
         dev_boot="/dev/$(xda "$p_boot_num")"
     fi
-    parted "/dev/$xda" -s -- mkpart ROOT ext4 "${p_root_start}MiB" "${p_root_end}MiB"
+    parted "/dev/$xda" -s -- mkpart ROOT ext4 "${p_root_start}MiB" "${p_root_initial_end}MiB"
     dev_os="/dev/$(xda "$p_root_num")"
     parted "/dev/$xda" -s -- mkpart INSTALLER ext4 "${p_installer_start}MiB" "${p_disk_end}MiB"
     dev_installer="/dev/$(xda "$p_installer_num")"
@@ -209,13 +239,23 @@ cp_mount_boot() {
 cp_finish_partitions() {
     parted "/dev/$xda" -s -- rm "$p_installer_num"
     update_part
+    if [ "$p_root_initial_end" != "$p_root_end" ]; then
+        # Root is unmounted here. Preserve its UUID and copied contents.
+        apk add e2fsprogs-extra
+        local fsck_status=0
+        e2fsck -f -p "$dev_os" || fsck_status=$?
+        [ "$fsck_status" -le 1 ] || { cp_fail 'Root filesystem check failed; refusing to grow.'; return 1; }
+        parted "/dev/$xda" -s -- resizepart "$p_root_num" "${p_root_end}MiB"
+        update_part
+        resize2fs "$dev_os"
+    fi
     if [ "$p_data" != 0 ]; then
         parted "/dev/$xda" -s -- mkpart DATA ext4 "${p_data_start}MiB" "${p_data_end}MiB"
         dev_data="/dev/$(xda "$p_data_num")"
         update_part
         mkfs.ext4 -F -L DATA "$dev_data"
     fi
-    # Deliberately do NOT call the upstream grow-to-disk-end helper.
+    # Never grow a fixed root or extend root over a requested data partition.
 }
 
 cp_fstab_line() {

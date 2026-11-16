@@ -122,7 +122,7 @@ Usage: $reinstall_____ anolis      7|8|23
                        [--no-cloud-kernel]         (only for Debian/Ubuntu/Alpine/openSUSE)
 
                        Ubuntu 24.04 x86_64 custom GPT layout (local bundle required):
-                       [--root-size SIZE]          (required for custom layout; min 8GiB)
+                       [--root-size SIZE|rest]     (optional; min 8GiB, see README defaults)
                        [--boot-size SIZE|0]        (optional separate /boot)
                        [--efi-size SIZE]           (UEFI only; default 512MiB)
                        [--data-size SIZE|rest]      (optional data partition)

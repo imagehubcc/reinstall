@@ -30,13 +30,29 @@ BIOS/UEFI is detected automatically. UEFI defaults to a 512MiB EFI partition; BI
 
 | Option | Purpose |
 | --- | --- |
-| `--root-size SIZE` | Required for custom layouts; minimum 8GiB |
+| `--root-size SIZE` or `--root-size rest` | Optional; fixed size minimum 8GiB; omission rules below |
 | `--boot-size SIZE` | Optional separate `/boot`; minimum 512MiB; omit or use `0` to keep it in root |
-| `--data-size SIZE` or `--data-size rest` | Optional data partition; minimum 1GiB |
+| `--data-size SIZE` or `--data-size rest` | Optional data partition; minimum 1GiB; `0` disables it |
 | `--data-mount /PATH` | Data mount point; default `/data` |
 | `--efi-size SIZE` | Optional UEFI size override; default 512MiB, minimum 100MiB |
 
-Sizes accept positive integers in MiB/GiB/TiB, MB/GB/TB, or binary aliases M/G/T. Fixed allocations leave extra space unallocated.
+For a separate 2GiB boot partition with all remaining space assigned to root:
+
+```sh
+sudo bash reinstall.sh ubuntu 24.04 --target-disk /dev/nvme0n1 --boot-size 2GiB
+```
+
+An explicit `--root-size rest` is also supported. Login options can be added as needed.
+
+Omitted options use these defaults:
+
+- Boot/EFI-only or explicit root `rest`: remaining space goes to root, with no data partition.
+- Fixed data size without a root size: root receives the remaining space after data.
+- Data `rest` without a root size: root defaults to 20GiB, with the remainder assigned to data.
+- A data mount point without a data size implies data `rest`; root defaults to 20GiB if omitted.
+- Explicit root `rest` plus data `rest`, or data `0` plus a mount point, is rejected as conflicting. Invalid values and insufficient capacity are also rejected.
+
+Sizes accept positive integers in MiB/GiB/TiB, MB/GB/TB, or binary aliases M/G/T. When both root and data have fixed sizes, extra space stays unallocated.
 
 **Custom partitions currently support only Linux-to-Ubuntu 24.04 x86_64 cloud-image installation.** Without custom partition options, the original upstream script’s default installation behavior and features apply.
 
