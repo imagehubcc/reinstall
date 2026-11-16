@@ -44,6 +44,18 @@ sudo bash reinstall.sh ubuntu 24.04 --target-disk /dev/nvme0n1 --boot-size 2GiB
 
 An explicit `--root-size rest` is also supported. Login options can be added as needed.
 
+`/data` is only the default mount point. Use `/home`, `/opt`, or another allowed path with the same partitioning behavior. Currently, only one custom data partition is supported.
+
+For a 64GiB root partition with the remaining space mounted separately at `/home`:
+
+```sh
+sudo bash reinstall.sh ubuntu 24.04 \
+  --root-size 64GiB --data-size rest --data-mount /home
+```
+
+Replace `/home` with your preferred path. Separate `/home` and `/opt` partitions cannot both be requested. Critical system paths such as `/etc`, `/usr`, and `/var`, and paths containing symlinks, are rejected.
+
+
 Omitted options use these defaults:
 
 - Boot/EFI-only or explicit root `rest`: remaining space goes to root, with no data partition.

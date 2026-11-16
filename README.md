@@ -10,7 +10,7 @@
 ## 功能
 
 - 自定义根分区、可选独立 `/boot` 和数据分区大小，支持根分区自动使用剩余空间。
-- 数据分区支持固定大小或 `rest` 使用剩余空间，默认挂载到 `/data`。
+- 数据分区支持固定大小或 `rest` 使用剩余空间；`/data` 只是默认挂载点，可改为 `/home`、`/opt` 等自定义路径。目前只支持一个自定义数据分区。
 - 自动识别 BIOS/UEFI：UEFI 默认创建 512MiB EFI 分区；BIOS 创建 1MiB BIOS-GRUB 保留分区。
 - 清盘前检查参数与容量，自动配置 UUID 挂载和引导。
 
@@ -72,6 +72,16 @@ sudo bash reinstall.sh ubuntu 24.04 --target-disk /dev/nvme0n1 --boot-size 2GiB
 ```
 
 也可显式添加 `--root-size rest`；不指定数据分区参数就不创建数据分区。
+
+例如，根分区 64GiB，剩余空间单独挂载到 `/home`：
+
+```sh
+sudo bash reinstall.sh ubuntu 24.04 \
+  --root-size 64GiB --data-size rest --data-mount /home
+```
+
+将 `/home` 换为 `/opt` 或其他允许的路径即可，处理方式与 `/data` 一致；不能同时单独划分 `/home` 和 `/opt`。`/etc`、`/usr`、`/var` 等关键系统目录及符号链接路径不支持。
+
 
 ## 分区参数
 
