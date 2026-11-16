@@ -7,13 +7,16 @@
 - 根分区支持固定大小或 `rest`；省略时按 README 的规则自动分配。`/boot` 和数据分区可选。
 - 自动判断 BIOS/UEFI。UEFI 默认 EFI 大小为 512MiB；BIOS 不创建 EFI 分区。
 - `--efi-size` 只覆盖 UEFI 默认值，BIOS 下指定时会提前报错。
-- 数据分区为固定大小或 `rest`；仅当 root/data 都是固定大小时，多余空间保持未分配。
+- `--data-size SIZE /PATH` 可重复指定多个数据分区；旧单数据分区语法保留，新旧语法不能混用。
+- root 和所有数据分区合计最多一个显式 `rest`；root 的 `rest` 可以不搭配任何数据分区。数据使用 `rest` 时必须明确 root 固定大小。
+- 数据 `rest` 在所有固定数据分区之后创建，与参数顺序无关；仅当 root/所有数据分区都是固定大小时，多余空间保持未分配。
+- 重复或互为父子的挂载点会被拒绝；所有数据分区均在同一目标磁盘上创建。
 - 数据挂载点支持 `/data`、`/srv/storage`、`/home` 等普通绝对路径。
   拒绝空格、点路径、符号链接及 `/boot`、`/etc`、`/usr`、`/var` 等关键系统目录。
 - 分区大小按 MiB 对齐，预留引导及 GPT 元数据空间。文件系统元数据与保留块会影响可用容量。
 
 安装时先建立引导分区、可选 boot、root 和临时 installer。系统复制完成后删除 installer，
-按需扩容 root 的分区和 ext4 文件系统，再创建 data，因此 root 或 data 的 `rest` 均可回收临时安装空间，无需缩小根分区。
+按需扩容 root 的分区和 ext4 文件系统，再逐个创建数据分区，因此 root 或数据分区的 `rest` 均可回收临时安装空间，无需缩小根分区。
 root/boot 使用目标系统的格式化工具；fstab 使用实际 UUID，EFI 跳转按 boot 文件系统生成。
 
 `--hold 2` 可暂停在安装完成后的 Alpine 环境。自定义模式禁用 `/trans.sh update`，

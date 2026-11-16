@@ -36,13 +36,13 @@ update_part() {
 }
 fill_zero() { dd if=/dev/zero of="$1" bs=1M count=1 status=none; }
 for mode in efi bios; do
-for layout in fixed-root boot-only root-rest auto-root-data mount-only; do
+for layout in fixed-root boot-only root-rest auto-root-data mount-only multi-rest multi-root-rest multi-fixed; do
     truncate -s 32G "$image"
     loop_device=$(losetup --find --show --partscan "$image")
     [[ "$loop_device" == /dev/loop* ]] || exit 1
     [[ $(losetup -n -O BACK-FILE "$loop_device") == "$image" ]] || exit 1
     xda=${loop_device#/dev/}
-    unset part_root_size part_data_size part_data_mount
+    unset part_root_size part_data_size part_data_mount part_data_specs
     part_boot_size=512MiB
     case "$layout" in
         fixed-root) part_root_size=8GiB part_data_size=rest ;;
@@ -50,6 +50,9 @@ for layout in fixed-root boot-only root-rest auto-root-data mount-only; do
         root-rest) part_root_size=rest ;;
         auto-root-data) part_data_size=1GiB ;;
         mount-only) part_root_size=8GiB part_data_mount=/data part_boot_size=0 ;;
+        multi-rest) part_root_size=8GiB part_data_specs=rest:/data,2GiB:/home,3GiB:/opt ;;
+        multi-root-rest) part_root_size=rest part_data_specs=1GiB:/home,1GiB:/opt ;;
+        multi-fixed) part_root_size=8GiB part_data_specs=2GiB:/home,3GiB:/opt ;;
     esac
     echo "Testing $mode / $layout"
     cp_plan 32768 "$mode" 2048
@@ -68,9 +71,12 @@ for layout in fixed-root boot-only root-rest auto-root-data mount-only; do
     cp_finish_partitions
     [[ $(blockdev --getsize64 "$dev_os") -eq $(((p_root_end - p_root_start) * 1048576)) ]]
     [[ $(blkid -s UUID -o value "$dev_os") == "$root_uuid" ]]
-    if [[ -n "$dev_data" ]]; then
-        [[ $(blkid -s TYPE -o value "$dev_data") == ext4 ]]
-        [[ $(blockdev --getsize64 "$dev_data") -eq $(((p_data_end - p_data_start) * 1048576)) ]]
+    if [[ -n "$p_data_plan" ]]; then
+        while IFS=: read -r num point start end; do
+            dev=/dev/$(xda "$num")
+            [[ $(blkid -s TYPE -o value "$dev") == ext4 ]]
+            [[ $(blockdev --getsize64 "$dev") -eq $(((end - start) * 1048576)) ]]
+        done <<<"$p_data_plan"
     else
         [[ ! -b /dev/$(xda "$p_installer_num") ]]
     fi
@@ -84,19 +90,29 @@ for layout in fixed-root boot-only root-rest auto-root-data mount-only; do
         mkdir -p "$test_dir/os/boot/efi"
         mount "$dev_efi" "$test_dir/os/boot/efi"
     fi
-    mkdir -p "$test_dir/os/etc" "$test_dir/os/data"
-    echo preserved-data >"$test_dir/os/data/probe"
+    mkdir -p "$test_dir/os/etc"
+    while IFS=: read -r dev point; do
+        [[ -n "$dev" ]] || continue
+        mkdir -p "$test_dir/os$point"
+        chmod 750 "$test_dir/os$point"
+        chown 1001:1002 "$test_dir/os$point"
+        echo preserved-data >"$test_dir/os$point/probe"
+        chmod 640 "$test_dir/os$point/probe"
+        chown 1001:1002 "$test_dir/os$point/probe"
+    done < <(cp_data_devices)
     cp_mount_data "$test_dir/os"
-    [[ $(cat "$test_dir/os/data/probe") == preserved-data ]]
     echo kernel-probe >"$test_dir/os/boot/kernel-probe"
     echo '# generated in loop test' >"$test_dir/os/etc/fstab"
     cp_write_fstab "$test_dir/os"
     if [[ -n "$dev_boot" ]]; then grep -q ' /boot ext4 ' "$test_dir/os/etc/fstab"; fi
-    if [[ -n "$dev_data" ]]; then
-        grep -q ' /data ext4 ' "$test_dir/os/etc/fstab"
-    else
-        if grep -q ' /data ' "$test_dir/os/etc/fstab"; then exit 1; fi
-    fi
+    while IFS=: read -r dev point; do
+        [[ -n "$dev" ]] || continue
+        [[ $(findmnt -n -o SOURCE --target "$test_dir/os$point") == "$dev" ]]
+        [[ $(cat "$test_dir/os$point/probe") == preserved-data ]]
+        [[ $(stat -c '%u:%g:%a' "$test_dir/os$point") == 1001:1002:750 ]]
+        [[ $(stat -c '%u:%g:%a' "$test_dir/os$point/probe") == 1001:1002:640 ]]
+        grep -Fxq "UUID=$(blkid -s UUID -o value "$dev") $point ext4 defaults 0 2" "$test_dir/os/etc/fstab"
+    done < <(cp_data_devices)
     if [[ "$mode" == efi ]]; then
         [[ $(blkid -s TYPE -o value "$dev_efi") == vfat ]]
         cp_fix_efi_grub "$test_dir/os"
@@ -105,11 +121,14 @@ for layout in fixed-root boot-only root-rest auto-root-data mount-only; do
     parted "$loop_device" -s unit MiB print
     umount -R "$test_dir/os"
     # Check actual persistence after unmount/remount, not only the mount table.
-    if [[ -n "$dev_data" ]]; then
-        mount "$dev_data" "$test_dir/os"
+    while IFS=: read -r dev point; do
+        [[ -n "$dev" ]] || continue
+        mount "$dev" "$test_dir/os"
         [[ $(cat "$test_dir/os/probe") == preserved-data ]]
+        [[ $(stat -c '%u:%g:%a' "$test_dir/os") == 1001:1002:750 ]]
+        [[ $(stat -c '%u:%g:%a' "$test_dir/os/probe") == 1001:1002:640 ]]
         umount "$test_dir/os"
-    fi
+    done < <(cp_data_devices)
     if [[ -n "$dev_boot" ]]; then
         mount "$dev_boot" "$test_dir/os"
         [[ $(cat "$test_dir/os/kernel-probe") == kernel-probe ]]

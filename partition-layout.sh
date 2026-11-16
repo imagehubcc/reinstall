@@ -4,7 +4,7 @@
 # Variables distro/releasever/xda are provided by the upstream caller.
 # shellcheck disable=SC2154
 # shellcheck disable=SC2034
-CUSTOM_PARTITION_API=1
+CUSTOM_PARTITION_API=2
 
 # /configs is carried into Alpine sysroot by upstream's initramfs hook.
 # Files placed only at initramfs / are discarded at switch_root.
@@ -44,6 +44,37 @@ cp_size_mib() {
     echo "$(((number * factor + 1048575) / 1048576))"
 }
 
+# Canonical list: fixed-size partitions first, one optional rest partition last.
+# Comma and colon are not allowed in mount paths, so no eval/word splitting is used.
+cp_add_data() {
+    local size=$1 point=$2 previous remaining old_point
+    printf '%s\n' "$point" | grep -Eq '^/([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+$' || {
+        cp_fail 'Invalid data mount path.'; return 1;
+    }
+    case "$point/" in
+    /boot/* | /etc/* | /usr/* | /bin/* | /sbin/* | /lib/* | /lib64/* | /dev/* | /proc/* | /sys/* | /run/* | /tmp/* | /root/* | /var/* | /lost+found/*)
+        cp_fail 'Data mount must not replace a system directory.'; return 1 ;;
+    esac
+    remaining=$p_data_specs
+    if [ -n "$p_data_rest_mount" ]; then remaining="${remaining:+$remaining,}rest:$p_data_rest_mount"; fi
+    while [ -n "$remaining" ]; do
+        previous=${remaining%%,*} old_point=${previous#*:}
+        case "$point/" in "$old_point/"*) cp_fail 'Duplicate or nested data mount points.'; return 1 ;; esac
+        case "$old_point/" in "$point/"*) cp_fail 'Duplicate or nested data mount points.'; return 1 ;; esac
+        case "$remaining" in *,*) remaining=${remaining#*,} ;; *) remaining='' ;; esac
+    done
+    if [ "$size" = rest ]; then
+        [ -z "$p_data_rest_mount" ] || { cp_fail 'Only one data partition may use rest.'; return 1; }
+        p_data_rest_mount=$point
+    else
+        size=$(cp_size_mib "$size") || return 1
+        [ "$size" -ge 1024 ] || { cp_fail 'Data partition must be at least 1GiB.'; return 1; }
+        p_data_fixed=$((p_data_fixed + size))
+        p_data_specs="${p_data_specs:+$p_data_specs,}$size:$point"
+    fi
+    p_data_count=$((p_data_count + 1))
+}
+
 cp_validate() {
     # Infer only omitted values; explicit competing "rest" requests are errors.
     case "${part_root_size:-}" in
@@ -60,36 +91,41 @@ cp_validate() {
     fi
     p_efi=$(cp_size_mib "${part_efi_size:-512MiB}") || return 1
     [ "$p_efi" -ge 100 ] || { cp_fail 'EFI partition must be at least 100MiB.'; return 1; }
-    p_data=0
-    case "${part_data_size:-}" in
-    '') [ -z "${part_data_mount:-}" ] || p_data=rest ;;
-    0)
-        [ -z "${part_data_mount:-}" ] || { cp_fail '--data-size 0 conflicts with --data-mount.'; return 1; }
-        ;;
-    rest) p_data=rest ;;
-    *)
-        p_data=$(cp_size_mib "$part_data_size") || return 1
-        [ "$p_data" -ge 1024 ] || { cp_fail 'Data partition must be at least 1GiB.'; return 1; }
-        ;;
-    esac
-    if [ "$p_root" = rest ] && [ "$p_data" = rest ]; then
-        if [ -z "${part_root_size:-}" ]; then
-            cp_fail 'Data uses rest: specify --root-size SIZE to set the root partition size.'
-        else
-            cp_fail 'Root and data cannot both use rest.'
-        fi
-        return 1
-    fi
-    if [ "$p_data" != 0 ]; then
-        part_data_mount=${part_data_mount:-/data}
-        # Restrict to ordinary absolute paths, safe for cmdline and fstab.
-        printf '%s\n' "$part_data_mount" | grep -Eq '^/([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+$' || {
-            cp_fail 'Invalid data mount path.'; return 1;
-        }
-        case "$part_data_mount/" in
-        /boot/* | /etc/* | /usr/* | /bin/* | /sbin/* | /lib/* | /lib64/* | /dev/* | /proc/* | /sys/* | /run/* | /tmp/* | /root/* | /var/* | /lost+found/*)
-            cp_fail 'Data mount must not replace a system directory.'; return 1 ;;
+    p_data_specs='' p_data_fixed=0 p_data_rest_mount='' p_data_count=0
+    local remaining item size point
+    if [ -n "${part_data_specs:-}" ]; then
+        [ -z "${part_data_size:-}${part_data_mount:-}" ] || { cp_fail 'Do not mix paired --data-size SIZE /PATH with legacy --data-size/--data-mount.'; return 1; }
+        remaining=$part_data_specs
+        case "$remaining" in *,) cp_fail 'Invalid data partition list.'; return 1 ;; esac
+        while [ -n "$remaining" ]; do
+            item=${remaining%%,*}
+            case "$item" in *:*) : ;; *) cp_fail 'Each data partition needs SIZE and /PATH.'; return 1 ;; esac
+            size=${item%%:*} point=${item#*:}
+            cp_add_data "$size" "$point" || return 1
+            case "$remaining" in *,*) remaining=${remaining#*,} ;; *) remaining='' ;; esac
+        done
+    else
+        case "${part_data_size:-}" in
+        '')
+            if [ -n "${part_data_mount:-}" ]; then cp_add_data rest "$part_data_mount" || return 1; fi
+            ;;
+        0) [ -z "${part_data_mount:-}" ] || { cp_fail '--data-size 0 conflicts with --data-mount.'; return 1; } ;;
+        *) cp_add_data "$part_data_size" "${part_data_mount:-/data}" || return 1 ;;
         esac
+        if [ "$p_data_count" -gt 0 ]; then part_data_mount=${part_data_mount:-/data}; fi
+    fi
+    p_data=$p_data_fixed
+    if [ -n "$p_data_rest_mount" ]; then
+        p_data=rest
+        if [ "$p_root" = rest ]; then
+            if [ -z "${part_root_size:-}" ]; then
+                cp_fail 'Data uses rest: specify --root-size SIZE to set the root partition size.'
+            else
+                cp_fail 'Root and data cannot both use rest.'
+            fi
+            return 1
+        fi
+        p_data_specs="${p_data_specs:+$p_data_specs,}rest:$p_data_rest_mount"
     fi
 }
 
@@ -140,7 +176,7 @@ cp_plan() {
     p_root_start=$cursor
     p_root_grow=0
     if [ "$p_root" = rest ]; then
-        p_root_end=$((p_disk_end - p_data))
+        p_root_end=$((p_disk_end - p_data_fixed))
         [ "$((p_root_end - p_root_start))" -ge 8192 ] || { cp_fail 'Less than 8GiB remains for root.'; return 1; }
         p_root_grow=1
     else
@@ -154,11 +190,24 @@ cp_plan() {
     p_installer_num=$((num + 1))
     p_data_num=$p_installer_num
     p_data_start=$p_root_end
-    case "$p_data" in
-    0) p_data_end=$p_data_start ;;
-    rest) p_data_end=$p_disk_end ;;
-    *) p_data_end=$((p_data_start + p_data)) ;;
-    esac
+    p_data_end=$p_root_end
+    p_data_plan=''
+    local remaining item size point start end
+    remaining=$p_data_specs
+    num=$p_data_num
+    while [ -n "$remaining" ]; do
+        item=${remaining%%,*} size=${item%%:*} point=${item#*:}
+        start=$p_data_end
+        if [ "$size" = rest ]; then end=$p_disk_end; else end=$((start + size)); fi
+        [ "$end" -le "$p_disk_end" ] || { cp_fail 'Requested partitions exceed disk capacity.'; return 1; }
+        [ "$((end - start))" -ge 1024 ] || { cp_fail 'Less than 1GiB remains for data.'; return 1; }
+        [ "$num" -le 128 ] || { cp_fail 'Too many partitions for GPT.'; return 1; }
+        p_data_plan="${p_data_plan:+$p_data_plan
+}$num:$point:$start:$end"
+        p_data_end=$end
+        num=$((num + 1))
+        case "$remaining" in *,*) remaining=${remaining#*,} ;; *) remaining='' ;; esac
+    done
     if [ "$p_root_initial_end" -gt "$p_installer_start" ] ||
         [ "$((p_root_initial_end - p_root_start))" -lt 8192 ]; then
         cp_fail 'Disk cannot fit root, boot and temporary image storage (initial root needs 8GiB).'; return 1
@@ -183,8 +232,13 @@ cp_show_plan() {
     if [ "$p_root_initial_end" != "$p_root_end" ]; then
         echo "ROOT initially ends at ${p_root_initial_end}MiB; grows after installer removal"
     fi
-    if [ "$p_data" != 0 ]; then
-        echo "$p_data_num DATA $part_data_mount $p_data_start $p_data_end ext4 (created after installer removal)"
+    if [ -n "$p_data_plan" ]; then
+        local num point start end
+        while IFS=: read -r num point start end; do
+            echo "$num DATA $point $start $end ext4 (created after installer removal)"
+        done <<EOF
+$p_data_plan
+EOF
     fi
     echo "$p_installer_num INSTALLER temporary $p_installer_start $p_disk_end ext4 (removed after copying)"
 }
@@ -252,11 +306,19 @@ cp_finish_partitions() {
         update_part
         resize2fs "$dev_os"
     fi
-    if [ "$p_data" != 0 ]; then
-        parted "/dev/$xda" -s -- mkpart DATA ext4 "${p_data_start}MiB" "${p_data_end}MiB"
-        dev_data="/dev/$(xda "$p_data_num")"
-        update_part
-        mkfs.ext4 -F -L DATA "$dev_data"
+    if [ -n "$p_data_plan" ]; then
+        local num point start end dev label
+        while IFS=: read -r num point start end; do
+            label=DATA
+            [ "$num" = "$p_data_num" ] || label=DATA$num
+            parted "/dev/$xda" -s -- mkpart "$label" ext4 "${start}MiB" "${end}MiB"
+            dev="/dev/$(xda "$num")"
+            [ "$num" != "$p_data_num" ] || dev_data=$dev
+            update_part
+            mkfs.ext4 -F -L "$label" "$dev"
+        done <<EOF
+$p_data_plan
+EOF
     fi
     # Never grow a fixed root or extend root over a requested data partition.
 }
@@ -268,10 +330,29 @@ cp_fstab_line() {
     printf 'UUID=%s %s %s %s 0 %s\n' "$uuid" "$2" "$3" "$4" "$5"
 }
 
+# Map the validated layout to devices; fallback keeps legacy single-device callers.
+cp_data_devices() {
+    local num point start end
+    if [ -n "${p_data_plan:-}" ]; then
+        while IFS=: read -r num point start end; do
+            printf '/dev/%s:%s\n' "$(xda "$num")" "$point"
+        done <<EOF
+$p_data_plan
+EOF
+    elif [ -n "${dev_data:-}" ]; then
+        printf '%s:%s\n' "$dev_data" "$part_data_mount"
+    fi
+}
+
 cp_write_fstab() {
-    local os_dir=$1
-    awk -v data="${part_data_mount:-}" '
-        $2 != "/" && $2 != "/boot" && $2 != "/boot/efi" && (data == "" || $2 != data)
+    local os_dir=$1 devices dev point
+    devices=$(cp_data_devices)
+    awk -v data="$devices" '
+        BEGIN {
+            n=split(data, lines, "\n")
+            for (i=1; i<=n; i++) { split(lines[i], fields, ":"); if (fields[2] != "") mounts[fields[2]]=1 }
+        }
+        $2 != "/" && $2 != "/boot" && $2 != "/boot/efi" && !($2 in mounts)
     ' "$os_dir/etc/fstab" >"$os_dir/etc/fstab.custom"
     cp_fstab_line "$dev_os" / ext4 defaults 1 >>"$os_dir/etc/fstab.custom" || return 1
     if [ -n "${dev_boot:-}" ]; then
@@ -280,33 +361,52 @@ cp_write_fstab() {
     if [ -n "${dev_efi:-}" ]; then
         cp_fstab_line "$dev_efi" /boot/efi vfat umask=0077 2 >>"$os_dir/etc/fstab.custom" || return 1
     fi
-    if [ -n "${dev_data:-}" ]; then
-        cp_fstab_line "$dev_data" "$part_data_mount" ext4 defaults 2 >>"$os_dir/etc/fstab.custom" || return 1
+    if [ -n "$devices" ]; then
+        while IFS=: read -r dev point; do
+            cp_fstab_line "$dev" "$point" ext4 defaults 2 >>"$os_dir/etc/fstab.custom" || return 1
+        done <<EOF
+$devices
+EOF
     fi
     mv "$os_dir/etc/fstab.custom" "$os_dir/etc/fstab"
 }
 
-cp_mount_data() {
-    local os_dir=${1:-/os} staging
-    staging=$os_dir.custom-data
-    if [ -n "${dev_data:-}" ]; then
-        # Keep existing files (e.g. when /home is selected) on the new filesystem.
-        # Reject symlinks instead of following one outside the new root.
-        local path=$os_dir component rest=${part_data_mount#/}
+cp_check_data_paths() {
+    local os_dir=$1 devices dev point path component rest
+    devices=$(cp_data_devices)
+    [ -n "$devices" ] || return 0
+    # Check all paths before copying or mounting any partition.
+    while IFS=: read -r dev point; do
+        path=$os_dir rest=${point#/}
         while [ -n "$rest" ]; do
             component=${rest%%/*}
             path=$path/$component
             [ ! -L "$path" ] || { cp_fail "Symlink in data mount path: $path"; return 1; }
+            [ ! -e "$path" ] || [ -d "$path" ] || { cp_fail "Data mount path is not a directory: $path"; return 1; }
             case "$rest" in */*) rest=${rest#*/} ;; *) rest= ;; esac
         done
-        mkdir -p "$os_dir$part_data_mount" "$staging"
-        mount "$dev_data" "$staging"
-        cp -a "$os_dir$part_data_mount/." "$staging/"
-        # Leave underlying files intact until reboot rather than deleting user paths.
+    done <<EOF
+$devices
+EOF
+}
+
+cp_mount_data() {
+    local os_dir=${1:-/os} staging devices dev point
+    staging=$os_dir.custom-data
+    devices=$(cp_data_devices)
+    [ -n "$devices" ] || return 0
+    cp_check_data_paths "$os_dir" || return 1
+    while IFS=: read -r dev point; do
+        mkdir -p "$os_dir$point" "$staging"
+        mount "$dev" "$staging"
+        # Preserve the new image's directory ownership/mode as well as contents.
+        cp -a "$os_dir$point/." "$staging/"
         umount "$staging"
         rmdir "$staging"
-        mount "$dev_data" "$os_dir$part_data_mount"
-    fi
+        mount "$dev" "$os_dir$point"
+    done <<EOF
+$devices
+EOF
 }
 
 cp_fix_efi_grub() {

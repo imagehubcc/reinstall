@@ -32,7 +32,8 @@ BIOS/UEFI is detected automatically. UEFI defaults to a 512MiB EFI partition; BI
 | --- | --- |
 | `--root-size SIZE` or `--root-size rest` | Optional; fixed size minimum 8GiB; omission rules below |
 | `--boot-size SIZE` | Optional separate `/boot`; minimum 512MiB; omit or use `0` to keep it in root |
-| `--data-size SIZE` or `--data-size rest` | Optional data partition; minimum 1GiB; `0` disables it |
+| `--data-size SIZE /PATH` or `--data-size rest /PATH` | Repeat for multiple data partitions; fixed minimum 1GiB; at most one `rest` |
+| `--data-size SIZE` or `--data-size rest` | Legacy single-data-partition syntax; `0` disables it |
 | `--data-mount /PATH` | Data mount point; default `/data` |
 | `--efi-size SIZE` | Optional UEFI size override; default 512MiB, minimum 100MiB |
 
@@ -44,27 +45,28 @@ sudo bash reinstall.sh ubuntu 24.04 --target-disk /dev/nvme0n1 --boot-size 2GiB
 
 An explicit `--root-size rest` is also supported. Login options can be added as needed.
 
-`/data` is only the default mount point. Use `/home`, `/opt`, or another allowed path with the same partitioning behavior. Currently, only one custom data partition is supported.
-
-For a 64GiB root partition with the remaining space mounted separately at `/home`:
+`/data` is only the default mount point. `/home`, `/opt`, and other allowed paths use the same mechanism. Multiple custom data partitions are supported on the same target disk:
 
 ```sh
 sudo bash reinstall.sh ubuntu 24.04 \
-  --root-size 64GiB --data-size rest --data-mount /home
+  --root-size 64GiB --boot-size 2GiB \
+  --data-size 50GiB /home \
+  --data-size 30GiB /opt \
+  --data-size rest /data
 ```
 
-Replace `/home` with your preferred path. Separate `/home` and `/opt` partitions cannot both be requested. Critical system paths such as `/etc`, `/usr`, and `/var`, and paths containing symlinks, are rejected.
-
+The legacy `--data-size rest --data-mount /home` syntax and default `/data` mount point remain supported. Do not mix paired and legacy data syntax. Critical system paths such as `/etc`, `/usr`, and `/var`, and paths containing symlinks, are rejected. The target disk is still erased; existing data is not preserved.
 
 Omitted options use these defaults:
 
 - Boot/EFI-only or explicit root `rest`: remaining space goes to root, with no data partition.
-- Fixed data size without a root size: root receives the remaining space after data.
+- All data sizes fixed, with root omitted or `--root-size rest`: root receives the space remaining after all data partitions.
 - Data `rest` requires an explicit fixed `--root-size SIZE`; omission produces a message asking you to supply it, rather than choosing a size for you.
 - A data mount point without a data size implies data `rest` and likewise requires an explicit fixed root size.
-- Explicit root `rest` plus data `rest`, or data `0` plus a mount point, is rejected as conflicting. Invalid values and insufficient capacity are also rejected.
+- Root `rest` without data partitions is valid. At most one explicit `rest` is allowed across root and data. A data `rest` partition is placed after all fixed data partitions, regardless of argument order.
+- Duplicate or nested mount points, multiple `rest` requests, mixed paired/legacy syntax, and data `0` plus a mount point are rejected. Missing required values, invalid values, and insufficient capacity are also rejected.
 
-Sizes accept positive integers in MiB/GiB/TiB, MB/GB/TB, or binary aliases M/G/T. When both root and data have fixed sizes, extra space stays unallocated.
+Sizes accept positive integers in MiB/GiB/TiB, MB/GB/TB, or binary aliases M/G/T. When root and all data partitions have fixed sizes, extra space stays unallocated.
 
 **Custom partitions currently support only Linux-to-Ubuntu 24.04 x86_64 cloud-image installation.** Without custom partition options, the original upstream script’s default installation behavior and features apply.
 

@@ -10,7 +10,7 @@
 ## 功能
 
 - 自定义根分区、可选独立 `/boot` 和数据分区大小，支持根分区自动使用剩余空间。
-- 数据分区支持固定大小或 `rest` 使用剩余空间；`/data` 只是默认挂载点，可改为 `/home`、`/opt` 等自定义路径。目前只支持一个自定义数据分区。
+- 数据分区支持固定大小或 `rest` 使用剩余空间；`/data` 只是默认挂载点，可改为 `/home`、`/opt` 等自定义路径。支持多个自定义数据分区。
 - 自动识别 BIOS/UEFI：UEFI 默认创建 512MiB EFI 分区；BIOS 创建 1MiB BIOS-GRUB 保留分区。
 - 清盘前检查参数与容量，自动配置 UUID 挂载和引导。
 
@@ -73,15 +73,19 @@ sudo bash reinstall.sh ubuntu 24.04 --target-disk /dev/nvme0n1 --boot-size 2GiB
 
 也可显式添加 `--root-size rest`；不指定数据分区参数就不创建数据分区。
 
-例如，根分区 64GiB，剩余空间单独挂载到 `/home`：
+例如，同时划分 `/home`、`/opt`，剩余空间挂载到 `/data`：
 
 ```sh
 sudo bash reinstall.sh ubuntu 24.04 \
-  --root-size 64GiB --data-size rest --data-mount /home
+  --root-size 64GiB --boot-size 2GiB \
+  --data-size 50GiB /home \
+  --data-size 30GiB /opt \
+  --data-size rest /data
 ```
 
-将 `/home` 换为 `/opt` 或其他允许的路径即可，处理方式与 `/data` 一致；不能同时单独划分 `/home` 和 `/opt`。`/etc`、`/usr`、`/var` 等关键系统目录及符号链接路径不支持。
-
+每个 `--data-size 大小 /挂载点` 创建一个独立 ext4 分区，均位于同一目标磁盘。`/data` 只是默认挂载点，`/home`、`/opt` 等允许的路径使用相同机制。
+旧用法 `--data-size rest --data-mount /home` 和省略挂载点时默认 `/data` 的行为保留；新旧语法不能混用。
+`/etc`、`/usr`、`/var` 等关键系统目录及符号链接路径不支持。重装仍会清空目标磁盘，不保留原有数据。
 
 ## 分区参数
 
@@ -89,7 +93,8 @@ sudo bash reinstall.sh ubuntu 24.04 \
 | --- | --- |
 | `--root-size SIZE` 或 `--root-size rest` | 可选，固定大小至少 8GiB；省略时自动分配，规则见下 |
 | `--boot-size SIZE` | 可选独立 `/boot`，至少 512MiB；省略或设为 `0` 则不单独分区 |
-| `--data-size SIZE` 或 `--data-size rest` | 可选数据分区，至少 1GiB；`rest` 使用剩余可用空间，`0` 表示不创建 |
+| `--data-size SIZE /PATH` 或 `--data-size rest /PATH` | 可重复指定多个数据分区，固定大小至少 1GiB；最多一个使用 `rest` |
+| `--data-size SIZE` 或 `--data-size rest` | 保留旧的单数据分区用法；`0` 表示不创建 |
 | `--data-mount /PATH` | 数据分区挂载点，默认 `/data` |
 | `--efi-size SIZE` | 可选 UEFI 大小覆盖，默认 512MiB，至少 100MiB；通常无需指定 |
 
@@ -97,12 +102,13 @@ SIZE 支持正整数 `MiB/GiB/TiB`、十进制 `MB/GB/TB`，以及二进制别�
 参数可按需省略，默认规则如下：
 
 - 只指定 boot、EFI 或 `--root-size rest`：根分区使用其余空间，不创建 data。
-- 指定固定大小的 data，省略 root 大小：根分区使用扣除 data 后的其余空间。
+- 所有数据分区均为固定大小，省略 root 大小或指定 `--root-size rest`：根分区使用扣除这些分区后的其余空间。
 - 指定 `--data-size rest` 时，必须用 `--root-size SIZE` 明确根分区大小；省略会提示补充参数，不会擅自分配。
 - 指定 `--data-mount /PATH`、省略 data 大小：按 data 使用 `rest` 处理，同样要求明确根分区大小。
-- 显式指定 root 和 data 同时为 `rest`，或 `--data-size 0` 同时指定挂载点，属于矛盾参数，会报错。容量不足和非法值也会拒绝，不会静默忽略。
+- `--root-size rest` 不指定数据分区合法。root 与数据分区合计最多一个显式 `rest`；数据 `rest` 不受参数顺序影响，实际放在固定数据分区之后。
+- 重复或互为父子的挂载点、多处 `rest`、新旧数据语法混用，以及 `--data-size 0` 同时指定挂载点会报错。缺少必要值、容量不足和非法值也会拒绝，不会静默忽略。
 
-root、data 均为固定大小时，多余空间保持未分配；`df` 显示的文件系统容量会小于分区大小。
+root 和所有数据分区均为固定大小时，多余空间保持未分配；`df` 显示的文件系统容量会小于分区大小。
 BIOS 下显式传入 `--efi-size` 会在准备阶段报错退出，不会继续清盘；该参数不会改变固件模式。
 
 ## 自动同步上游

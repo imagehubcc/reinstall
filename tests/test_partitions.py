@@ -131,6 +131,69 @@ xda() {{ echo "vda$1"; }}
                 self.assertLess(trace.index('resizepart'), trace.index('GROW /dev/vda3'))
                 self.assertLess(trace.index('GROW'), trace.index('mkpart DATA'))
 
+    def test_multiple_data_layouts_and_rest_order(self):
+        for mode, root_start in [('efi', 2561), ('bios', 2050)]:
+            for specs in ['2GiB:/home,3GiB:/opt,rest:/data',
+                          'rest:/data,2GiB:/home,3GiB:/opt']:
+                self.ok(f'''part_root_size=8GiB part_boot_size=2GiB
+part_data_specs={specs}
+cp_plan 32768 {mode} 2048
+cp_plan 32768 {mode} 2048
+echo "$p_data_plan"
+''', f'4:/home:{root_start+8192}:{root_start+10240}\n'
+                      f'5:/opt:{root_start+10240}:{root_start+13312}\n'
+                      f'6:/data:{root_start+13312}:32767')
+        self.ok('''part_root_size=rest part_data_specs=1GiB:/home,2GiB:/opt
+cp_plan 32768 bios 2048
+echo "$p_root_end:$p_data_fixed:$p_data_count:$p_data_end"
+''', '29695:3072:2:32767')
+        self.ok('''part_data_specs=1GiB:/home,2GiB:/opt
+cp_plan 32768 bios 2048
+echo "$p_root_end:$p_data_fixed:$p_data_count:$p_data_end"
+''', '29695:3072:2:32767')
+        self.ok('part_root_size=rest; cp_plan 32768 bios 2048; echo "$p_root_end:$p_data_count"', '32767:0')
+
+    def test_multiple_data_rejects_conflicts(self):
+        for specs in ['1GiB:/home,1GiB:/home', '1GiB:/home,1GiB:/home/alice',
+                      '1GiB:/home/alice,1GiB:/home', 'rest:/home,rest:/opt',
+                      '1GiB:/opt,1GiB:/etc', '1GiB:/opt,0:/home',
+                      '1GiB:/opt,1GiB:/data;id', '1GiB:/opt,', '1GiB:/opt,,1GiB:/home']:
+            with self.subTest(specs=specs):
+                self.bad('part_root_size=8GiB part_data_specs=' + shlex.quote(specs) + '; cp_plan 32768 bios 2048')
+        self.bad('part_data_specs=rest:/home; cp_validate', 'specify --root-size SIZE')
+        self.bad('part_root_size=rest part_data_specs=rest:/home; cp_validate', 'both use rest')
+        self.bad('part_root_size=8GiB part_data_specs=1GiB:/home part_data_mount=/opt; cp_validate', 'mix')
+        self.bad('part_root_size=8GiB part_data_specs=30GiB:/home,2GiB:/opt; cp_plan 32768 bios 2048', 'exceed disk')
+
+    def test_multiple_fstab_and_path_checks(self):
+        self.ok('''
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/etc" "$tmp/home" "$tmp/opt"
+printf 'UUID=OLD /home ext4 defaults 0 2\\nUUID=OLD /opt ext4 defaults 0 2\\n# keep comment\\n' >"$tmp/etc/fstab"
+p_data_plan='4:/home:100:200
+5:/opt:200:300'
+dev_os=/dev/vda3
+xda() { echo "vda$1"; }
+lsblk() { case "$*" in *vda3) echo ROOT;; *vda4) echo HOME;; *vda5) echo OPT;; esac; }
+cp_check_data_paths "$tmp"
+cp_write_fstab "$tmp"
+cp_write_fstab "$tmp"
+grep -Fxq 'UUID=HOME /home ext4 defaults 0 2' "$tmp/etc/fstab"
+grep -Fxq 'UUID=OPT /opt ext4 defaults 0 2' "$tmp/etc/fstab"
+[ "$(grep -c ' /home ' "$tmp/etc/fstab")" = 1 ]
+[ "$(grep -c ' /opt ' "$tmp/etc/fstab")" = 1 ]
+rm -r "$tmp/opt"
+touch "$tmp/opt"
+if cp_check_data_paths "$tmp"; then exit 1; fi
+rm "$tmp/opt"
+ln -s "$tmp/home" "$tmp/opt"
+# Git Bash may emulate directory symlinks as copies. Linux/ash checks the link.
+if [ -L "$tmp/opt" ]; then
+    if cp_check_data_paths "$tmp"; then exit 1; fi
+fi
+''')
+
     def test_bios_no_boot_fixed_data(self):
         self.ok('''
 part_root_size=300GiB part_data_size=100GiB
@@ -216,7 +279,7 @@ cp_embed_installer . "$initrd"
 cmp ./partition-layout.sh "$sysroot/configs/partition-layout.sh"
 unset CUSTOM_PARTITION_API
 . "$sysroot/configs/partition-layout.sh"
-[ "$CUSTOM_PARTITION_API" = 1 ]
+[ "$CUSTOM_PARTITION_API" = 2 ]
 ''')
 
     def test_capacity_validation_precedes_wipe(self):
@@ -230,6 +293,21 @@ cp_create() { echo UNSAFE_WRITE; }
 create_part
 ''', 'disk has not been wiped', trans=True)
         self.assertNotIn('UNSAFE_WRITE', result.stdout)
+
+    def test_multiple_invalid_options_never_reach_wipe(self):
+        for specs in ['rest:/home,rest:/opt', '1GiB:/home,1GiB:/home/alice',
+                      '30GiB:/home,3GiB:/opt']:
+            result = self.bad('''
+custom_partition=1 distro=ubuntu releasever=24.04 basearch=x86_64 cloud_image=1 part_root_size=8GiB xda=vda
+part_data_specs=''' + shlex.quote(specs) + '''
+get_disk_size() { echo 34359738368; }
+get_cloud_image_part_size() { echo 2GiB; }
+is_efi() { return 0; }
+error_and_exit() { echo "$*" >&2; exit 9; }
+cp_create() { echo UNSAFE_WRITE; }
+create_part
+''', 'disk has not been wiped', trans=True)
+            self.assertNotIn('UNSAFE_WRITE', result.stdout)
 
     def test_create_and_finish_roles(self):
         trace = self.ok(FORMATTER_MOCKS + '''
@@ -281,6 +359,31 @@ cp_validate
 echo "$custom_partition:$part_root_size:$part_boot_size:$part_efi_size:$part_data_size:$part_data_mount"
 ''', '1:300GiB:2GiB:512MiB:rest:/srv/data')
 
+    @unittest.skipIf('ash' in SHELL, 'Entry CLI uses Bash')
+    def test_paired_cli_normalization_and_legacy_compatibility(self):
+        opts = ENTRY.split('# 整理参数\n', 1)[1].split('# 第一遍扫描', 1)[0]
+        scan = ENTRY.split('# 第二遍扫描，处理参数\n', 1)[1].split('# 检查必须的参数', 1)[0]
+        for args in [
+            'ubuntu 24.04 --root-size 8GiB --data-size rest /data --data-size 2GiB /home --data-size 3GiB /opt',
+            '--data-size=rest /data --data-size 2GiB /home --root-size 8GiB --data-size=3GiB /opt ubuntu 24.04',
+        ]:
+            self.ok('set -- ' + args + '\n' + opts + scan + '''
+cp_plan 32768 bios 2048
+echo "$part_data_specs:$p_data_count"
+''', 'rest:/data,2GiB:/home,3GiB:/opt:3')
+        self.ok('''set -- ubuntu 24.04 --root-size 8GiB --password '--data-size' --data-size rest --data-mount /home
+assert_username_valid() { :; }
+''' + opts + scan + '''
+cp_validate
+echo "$password:$p_data_count:$part_data_mount"
+''', '--data-size:1:/home')
+        for args in ['--data-size 2GiB /home,3GiB:/opt',
+                     '--data-size 2GiB:/home,3GiB /opt',
+                     '--data-size 2GiB /home --data-mount /opt',
+                     '--data-size 2GiB --data-size 3GiB',
+                     '--data-mount /home --data-size 2GiB /opt']:
+            self.bad('error_and_exit() { echo "$*" >&2; exit 9; }; set -- ubuntu 24.04 ' + args + '\n' + opts + scan)
+
     def test_fstab_idempotence_and_grub(self):
         self.ok('''
 tmp=$(mktemp -d)
@@ -312,10 +415,10 @@ grep -Fq 'set prefix=($root)/boot/grub' "$tmp/boot/efi/EFI/ubuntu/grub.cfg"
         self.ok('''
 is_need_quote() { return 1; }
 is_grub_dir_linked() { return 1; }
-custom_partition=1 part_root_size=300GiB part_data_size=rest part_data_mount=/data
+custom_partition=1 part_root_size=300GiB part_data_specs=2GiB:/home,rest:/opt
 build_extra_cmdline() {''' + fn + '''
 build_extra_cmdline
-case "$extra_cmdline" in *"extra_custom_partition=1"*"extra_part_root_size=300GiB"*"extra_part_data_size=rest"*"extra_part_data_mount=/data"*) :;; *) exit 1;; esac
+case "$extra_cmdline" in *"extra_custom_partition=1"*"extra_part_root_size=300GiB"*"extra_part_data_specs=2GiB:/home,rest:/opt"*) :;; *) exit 1;; esac
 ''')
 
 

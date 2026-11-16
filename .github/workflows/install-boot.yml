@@ -10,7 +10,7 @@ jobs:
       fail-fast: false
       matrix:
         firmware: [bios, uefi]
-        layout: [fixed-root, boot-only, root-rest, auto-root-data, mount-only]
+        layout: [fixed-root, boot-only, root-rest, auto-root-data, mount-only, multi-rest, multi-root-rest, multi-fixed]
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     steps:

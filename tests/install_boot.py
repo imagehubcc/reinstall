@@ -25,6 +25,9 @@ LAYOUTS = {
     'root-rest': '--root-size rest',
     'auto-root-data': '--data-size 1GiB',
     'mount-only': '--root-size 16GiB --data-mount /data',
+    'multi-rest': '--root-size 12GiB --data-size rest /data --data-size 2GiB /home --data-size 3GiB /opt',
+    'multi-root-rest': '--root-size rest --data-size 1GiB /home --data-size 1GiB /opt',
+    'multi-fixed': '--root-size 12GiB --data-size 2GiB /home --data-size 3GiB /opt',
 }
 
 
@@ -36,14 +39,24 @@ class VM:
     def __init__(self, firmware, source, work, layout):
         self.firmware, self.source, self.work = firmware, source.resolve(), work.resolve()
         self.layout = layout
-        self.has_data = layout in ('fixed-root', 'auto-root-data', 'mount-only')
-        self.marker = '/data/.ci-marker' if self.has_data else '/root/.ci-marker'
+        self.marker = '/root/.ci-marker'
         root_start = 2561 if firmware == 'uefi' else 2050
         root_end = {'fixed-root': root_start + 16384,
                     'mount-only': root_start + 16384,
-                    'auto-root-data': 32767 - 1024}.get(layout, 32767)
+                    'auto-root-data': 32767 - 1024,
+                    'multi-rest': root_start + 12288,
+                    'multi-fixed': root_start + 12288,
+                    'multi-root-rest': 32767 - 2048}.get(layout, 32767)
         self.expected_root = (root_end - root_start) * 1048576
-        self.expected_data = (32767 - root_end) * 1048576
+        self.data_partitions = []
+        if layout in ('fixed-root', 'mount-only', 'auto-root-data'):
+            self.data_partitions = [('/data', (32767 - root_end) * 1048576)]
+        elif layout in ('multi-rest', 'multi-fixed'):
+            self.data_partitions = [('/home', 2 * 1073741824), ('/opt', 3 * 1073741824)]
+            if layout == 'multi-rest':
+                self.data_partitions.append(('/data', (32767 - root_end - 5120) * 1048576))
+        elif layout == 'multi-root-rest':
+            self.data_partitions = [('/home', 1073741824), ('/opt', 1073741824)]
         self.process = None
         self.last_boot_id = None
         self.work.mkdir(parents=True, exist_ok=True)
@@ -189,6 +202,17 @@ chroot /os grub-script-check /boot/grub/grub.cfg
 echo ci-persistence-marker >/os{self.marker}
 sync
 ''')
+        for point, _ in self.data_partitions:
+            self.ssh(f'''set -e
+mountpoint -q /os{point}
+echo ci-data-marker >/os{point}/.ci-data-marker
+chmod 640 /os{point}/.ci-data-marker
+chown 1001:1002 /os{point}/.ci-data-marker
+mkdir -p /os{point}/.ci-directory
+chmod 750 /os{point}/.ci-directory
+chown 1001:1002 /os{point}/.ci-directory
+sync
+''')
         self.ssh('nohup sh -c "sleep 2; reboot" >/dev/null 2>&1 </dev/null &')
         time.sleep(15)
 
@@ -217,15 +241,19 @@ boot_uuid=$(lsblk -dnro UUID /dev/vda2)
 grep -q -- "--set=root $boot_uuid" /boot/efi/EFI/ubuntu/grub.cfg
 efibootmgr
 '''
-        if self.has_data:
-            script += f'''test "$(findmnt -n -o SOURCE /data)" = /dev/vda4
-test "$(findmnt -n -o FSTYPE /data)" = ext4
-test "$(blockdev --getsize64 /dev/vda4)" = {self.expected_data}
+        for num, (point, size) in enumerate(self.data_partitions, start=4):
+            script += f'''test "$(findmnt -n -o SOURCE {point})" = /dev/vda{num}
+test "$(findmnt -n -o FSTYPE {point})" = ext4
+test "$(blockdev --getsize64 /dev/vda{num})" = {size}
+uuid=$(blkid -s UUID -o value /dev/vda{num})
+grep -Fxq "UUID=$uuid {point} ext4 defaults 0 2" /etc/fstab
+grep -qx ci-data-marker {point}/.ci-data-marker
+test "$(stat -c '%u:%g:%a' {point}/.ci-data-marker)" = 1001:1002:640
+test "$(stat -c '%u:%g:%a' {point}/.ci-directory)" = 1001:1002:750
 '''
-        else:
-            script += '''test ! -b /dev/vda4
-if grep -q ' /data ' /etc/fstab; then exit 1; fi
-'''
+        script += f'test ! -b /dev/vda{4 + len(self.data_partitions)}\n'
+        if not self.data_partitions:
+            script += "if grep -q ' /data ' /etc/fstab; then exit 1; fi\n"
         # Verify filesystem growth too, not just the partition table. The ext4
         # metadata overhead is small; a missing installer-space reclaim is not.
         script += f'''fs_bytes=$(df -B1 --output=size / | tail -1)

@@ -1,5 +1,5 @@
 #!/bin/ash
-# CUSTOM_PARTITION_API=1
+# CUSTOM_PARTITION_API=2
 # shellcheck shell=dash
 # shellcheck disable=SC2086,SC3047,SC3036,SC3010,SC3001,SC3060,SC3015
 # alpine 默认使用 busybox ash
@@ -9172,7 +9172,7 @@ if [ "${custom_partition:-0}" = 1 ]; then
     # shellcheck source=partition-layout.sh
     # shellcheck disable=SC1091
     . /configs/partition-layout.sh
-    [ "$CUSTOM_PARTITION_API" = 1 ] || error_and_exit 'Custom partition API mismatch.'
+    [ "$CUSTOM_PARTITION_API" = 2 ] || error_and_exit 'Custom partition API mismatch.'
     cp_check_target || error_and_exit 'Unsupported or invalid custom layout.'
 fi
 

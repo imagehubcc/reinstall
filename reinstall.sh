@@ -125,7 +125,7 @@ Usage: $reinstall_____ anolis      7|8|23
                        [--root-size SIZE|rest]     (optional; min 8GiB, see README defaults)
                        [--boot-size SIZE|0]        (optional separate /boot)
                        [--efi-size SIZE]           (UEFI only; default 512MiB)
-                       [--data-size SIZE|rest]      (optional data partition)
+                       [--data-size SIZE|rest [/PATH]]      (optional data partition)
                        [--data-mount /PATH]         (default /data)
                        SIZE: integer MiB/GiB/TiB or MB/GB/TB; M/G/T mean MiB/GiB/TiB.
 
@@ -3753,7 +3753,7 @@ build_extra_cmdline() {
         force_old_windows_setup no_auto_drivers no_lockout_threshold \
         elts deb_mirror \
         username ssh_port rdp_port web_port web_path allow_ping \
-        custom_partition part_root_size part_boot_size part_efi_size part_data_size part_data_mount; do
+        custom_partition part_root_size part_boot_size part_efi_size part_data_size part_data_mount part_data_specs; do
         value=${!key}
         if [ -n "$value" ]; then
             is_need_quote "$value" &&
@@ -5152,6 +5152,48 @@ for o in ci installer debug minimal no-cloud-kernel no-auto-drivers allow-ping f
 done
 
 # 使用 getopt 解析参数
+# Normalize the paired data syntax before getopt permutes positional arguments.
+normalize_partition_args() {
+    partition_args=()
+    local option size
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --) partition_args+=("$@"); break ;;
+        --data-size)
+            [ "$#" -ge 2 ] || { echo 'Missing size for --data-size.' >&2; return 1; }
+            if [ "$#" -ge 3 ] && [[ "$3" = /* ]]; then
+                case "$2$3" in *:* | *,*) echo 'Invalid size or mount path in paired --data-size.' >&2; return 1 ;; esac
+                partition_args+=(--data-size "$2:$3"); shift 3
+            else
+                partition_args+=("$1" "$2"); shift 2
+            fi
+            ;;
+        --data-size=*)
+            size=${1#*=}
+            if [ "$#" -ge 2 ] && [[ "$2" = /* ]]; then
+                case "$size$2" in *:* | *,*) echo 'Invalid size or mount path in paired --data-size.' >&2; return 1 ;; esac
+                partition_args+=(--data-size "$size:$2"); shift 2
+            else
+                partition_args+=("$1"); shift
+            fi
+            ;;
+        --*=*) partition_args+=("$1"); shift ;;
+        --*)
+            option=${1#--}
+            case ",$long_opts," in
+            *",$option:,"*)
+                [ "$#" -ge 2 ] || { echo "Missing value for $1." >&2; return 1; }
+                partition_args+=("$1" "$2"); shift 2 ;;
+            *) partition_args+=("$1"); shift ;;
+            esac
+            ;;
+        *) partition_args+=("$1"); shift ;;
+        esac
+    done
+}
+normalize_partition_args "$@" || exit 1
+set -- "${partition_args[@]}"
+
 if ! ORIGINAL_OPTS=$(getopt -n $0 -o "h,x" --long "$long_opts" -- "$@"); then
     exit 1
 fi
@@ -5429,8 +5471,19 @@ EOF
         --root-size) part_root_size=$2 ;;
         --boot-size) part_boot_size=$2 ;;
         --efi-size) part_efi_size=$2 ;;
-        --data-size) part_data_size=$2 ;;
-        --data-mount) part_data_mount=$2 ;;
+        --data-size)
+            case "$2" in
+            *:*)
+                [ -z "${part_data_size:-}${part_data_mount:-}" ] || error_and_exit 'Do not mix paired and legacy data options.'
+                part_data_specs="${part_data_specs:+$part_data_specs,}$2" ;;
+            *)
+                [ -z "${part_data_specs:-}${part_data_size:-}" ] || error_and_exit 'Repeated legacy --data-size or mixed data syntax.'
+                part_data_size=$2 ;;
+            esac
+            ;;
+        --data-mount)
+            [ -z "${part_data_specs:-}${part_data_mount:-}" ] || error_and_exit 'Repeated --data-mount or mixed data syntax.'
+            part_data_mount=$2 ;;
         esac
         shift 2
         ;;
@@ -5497,8 +5550,8 @@ if [ "${custom_partition:-0}" = 1 ]; then
     # shellcheck source=partition-layout.sh
     # shellcheck disable=SC1091
     . "$custom_bundle_dir/partition-layout.sh"
-    if [ "$CUSTOM_PARTITION_API" != 1 ] ||
-        ! grep -qx '# CUSTOM_PARTITION_API=1' "$custom_bundle_dir/trans.sh"; then
+    if [ "$CUSTOM_PARTITION_API" != 2 ] ||
+        ! grep -qx '# CUSTOM_PARTITION_API=2' "$custom_bundle_dir/trans.sh"; then
         error_and_exit 'Custom partition module/installer API mismatch.'
     fi
     cp_validate || error_and_exit 'Invalid custom partition options.'
