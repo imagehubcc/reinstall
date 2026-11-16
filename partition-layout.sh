@@ -159,10 +159,10 @@ cp_plan() {
     rest) p_data_end=$p_disk_end ;;
     *) p_data_end=$((p_data_start + p_data)) ;;
     esac
-    [ "$p_root_initial_end" -le "$p_installer_start" ] &&
-        [ "$((p_root_initial_end - p_root_start))" -ge 8192 ] || {
-        cp_fail 'Disk cannot fit root, boot and temporary image storage (initial root needs 8GiB).'; return 1;
-    }
+    if [ "$p_root_initial_end" -gt "$p_installer_start" ] ||
+        [ "$((p_root_initial_end - p_root_start))" -lt 8192 ]; then
+        cp_fail 'Disk cannot fit root, boot and temporary image storage (initial root needs 8GiB).'; return 1
+    fi
     [ "$p_data_end" -le "$p_disk_end" ] || { cp_fail 'Requested partitions exceed disk capacity.'; return 1; }
     if [ "$p_data" != 0 ]; then
         [ "$((p_data_end - p_data_start))" -ge 1024 ] || { cp_fail 'Less than 1GiB remains for data.'; return 1; }
