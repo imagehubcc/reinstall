@@ -76,7 +76,7 @@ See the [Chinese README](README.md), [partition and maintenance guide](CUSTOM-PA
 
 ## Upstream synchronization
 
-The workflow checks upstream at minute 17 of every hour. A merged candidate must pass offline checks,
+The daily workflow checks upstream at 01:23 UTC. A merged candidate must pass offline checks,
 loop-image tests and complete BIOS/UEFI QEMU reinstall/boot tests before main is advanced.
 Conflicts, failures or concurrent main changes stop publication and create/update an assigned GitHub Issue.
 Tests use GitHub-hosted runners, with no server credentials. Manual verification is available in Actions.
