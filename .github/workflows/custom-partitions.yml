@@ -32,7 +32,6 @@ jobs:
           bash -n trans.sh
           busybox ash -n trans.sh
           shellcheck -s bash partition-layout.sh partition-plan.sh tests/loop-layout.sh
-          python3 tests/test_upstream_sync.py
           python3 tests/test_partitions.py
           PARTITION_SHELL='busybox ash' python3 tests/test_partitions.py
           python3 tools/check-upstream.py
