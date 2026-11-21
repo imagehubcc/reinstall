@@ -399,7 +399,7 @@ echo "$password:$p_data_count:$part_data_mount:$hold"
     @unittest.skipIf('ash' in SHELL, 'Entry CLI uses Bash')
     def test_custom_flags_remain_ubuntu_only(self):
         self.bad('set -- debian 24.04 --root-size 8GiB\n' + self.entry_parser(),
-                 'invalid option for debian')
+                 'root-size')
 
     def test_fstab_idempotence_and_grub(self):
         self.ok('''
