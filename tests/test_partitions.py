@@ -348,41 +348,58 @@ create_part
         self.assertNotIn('WRONG_CUSTOM_PATH', trace)
         self.assertIn('ext4 -2GiB 100%', trace)
 
+    def entry_parser(self):
+        definitions = ENTRY.split('get_long_opts_generic() {', 1)[1].split('# 脚本入口', 1)[0]
+        first_scan = ENTRY.split('# 整理参数\n', 1)[1].split('# 初始化重要变量', 1)[0]
+        second_scan = ENTRY.split('# 第二遍扫描\n', 1)[1].split('# 检查必须的参数', 1)[0]
+        stubs = '''
+del_empty_lines() { sed '/^[[:space:]]*$/d'; }
+verify_os_name() {
+    distro=$1
+    shift
+    [ "$#" -eq 1 ] && [ "$1" = 24.04 ]
+}
+'''
+        return stubs + 'get_long_opts_generic() {' + definitions + first_scan + second_scan
+
     @unittest.skipIf('ash' in SHELL, 'Entry CLI uses Bash, not the Alpine runtime shell')
     def test_cli_parser(self):
-        opts = ENTRY.split('# 整理参数\n', 1)[1].split('# 第一遍扫描', 1)[0]
-        scan = ENTRY.split('# 第二遍扫描，处理参数\n', 1)[1].split('# 检查必须的参数', 1)[0]
+        parser = self.entry_parser()
         self.ok('''
 set -- ubuntu 24.04 --root-size 300GiB --boot-size 2GiB --efi-size 512MiB --data-size rest --data-mount /srv/data
-''' + opts + scan + '''
+''' + parser + '''
 cp_validate
 echo "$custom_partition:$part_root_size:$part_boot_size:$part_efi_size:$part_data_size:$part_data_mount"
 ''', '1:300GiB:2GiB:512MiB:rest:/srv/data')
 
     @unittest.skipIf('ash' in SHELL, 'Entry CLI uses Bash')
     def test_paired_cli_normalization_and_legacy_compatibility(self):
-        opts = ENTRY.split('# 整理参数\n', 1)[1].split('# 第一遍扫描', 1)[0]
-        scan = ENTRY.split('# 第二遍扫描，处理参数\n', 1)[1].split('# 检查必须的参数', 1)[0]
+        parser = self.entry_parser()
         for args in [
             'ubuntu 24.04 --root-size 8GiB --data-size rest /data --data-size 2GiB /home --data-size 3GiB /opt',
             '--data-size=rest /data --data-size 2GiB /home --root-size 8GiB --data-size=3GiB /opt ubuntu 24.04',
         ]:
-            self.ok('set -- ' + args + '\n' + opts + scan + '''
+            self.ok('set -- ' + args + '\n' + parser + '''
 cp_plan 32768 bios 2048
 echo "$part_data_specs:$p_data_count"
 ''', 'rest:/data,2GiB:/home,3GiB:/opt:3')
-        self.ok('''set -- ubuntu 24.04 --root-size 8GiB --password '--data-size' --data-size rest --data-mount /home
+        self.ok('''set -- ubuntu 24.04 --root-size 8GiB --sleep 2 --password '--data-size' --data-size rest --data-mount /home
 assert_username_valid() { :; }
-''' + opts + scan + '''
+''' + parser + '''
 cp_validate
-echo "$password:$p_data_count:$part_data_mount"
-''', '--data-size:1:/home')
+echo "$password:$p_data_count:$part_data_mount:$hold"
+''', '--data-size:1:/home:2')
         for args in ['--data-size 2GiB /home,3GiB:/opt',
                      '--data-size 2GiB:/home,3GiB /opt',
                      '--data-size 2GiB /home --data-mount /opt',
                      '--data-size 2GiB --data-size 3GiB',
                      '--data-mount /home --data-size 2GiB /opt']:
-            self.bad('error_and_exit() { echo "$*" >&2; exit 9; }; set -- ubuntu 24.04 ' + args + '\n' + opts + scan)
+            self.bad('error_and_exit() { echo "$*" >&2; exit 9; }; set -- ubuntu 24.04 ' + args + '\n' + parser)
+
+    @unittest.skipIf('ash' in SHELL, 'Entry CLI uses Bash')
+    def test_custom_flags_remain_ubuntu_only(self):
+        self.bad('set -- debian 24.04 --root-size 8GiB\n' + self.entry_parser(),
+                 'invalid option for debian')
 
     def test_fstab_idempotence_and_grub(self):
         self.ok('''

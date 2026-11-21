@@ -1,7 +1,7 @@
 name: Verified upstream sync
 on:
   schedule:
-    - cron: '23 1 * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       verify:
@@ -43,7 +43,7 @@ jobs:
           path: ${{ runner.temp }}/candidate/
           retention-days: 7
       - run: |
-          echo 'Daily check finished. Full tests run only for updates or manual verification.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Upstream check finished. Full tests run only for updates or manual verification.' >> "$GITHUB_STEP_SUMMARY"
   offline:
     needs: prepare
     if: needs.prepare.outputs.test_required == 'true'

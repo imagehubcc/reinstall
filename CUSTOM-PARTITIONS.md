@@ -24,7 +24,7 @@ root/boot 使用目标系统的格式化工具；fstab 使用实际 UUID，EFI �
 
 ## 自动同步
 
-`Verified upstream sync` 每天北京时间 09:23 检测官方 `main`，也可在 Actions 页面手动触发。
+`Verified upstream sync` 每小时第 17 分钟检测官方 `main`，也可在 Actions 页面手动触发。
 只有发现更新时才执行安装测试；手动勾选 `verify` 可在无更新时验证完整流程。
 
 1. 从当前 `main` 创建候选合并，更新 `UPSTREAM_COMMIT`，固定本次待测提交。

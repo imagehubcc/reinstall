@@ -102,6 +102,7 @@ Usage: $reinstall_____ anolis      7|8|23
                        windows     --image-name="windows xxx yyy" --lang=xx-yy
                        windows     --image-name="windows xxx yyy" --iso="http://xxx.com/xxx.iso"
                        netboot.xyz
+                       talos
                        reset
 
        Options:        For Linux/Windows:
@@ -1507,6 +1508,11 @@ set_var() {
     # IFS= read -r "$1" <<<"$2"
 }
 
+get_daocloud_url() {
+    local url=$1
+    echo "https://files.m.daocloud.io/$(echo "$url" | sed -E 's,^https?://,,i')"
+}
+
 setos() {
     local step=$1
     local distro=$2
@@ -1527,6 +1533,26 @@ setos() {
         else
             set_osvar vmlinuz https://boot.netboot.xyz/ipxe/netboot.xyz.lkrn
         fi
+    }
+
+    setos_talos() {
+        # 全部网址都没有 ipv6
+        # https://factory.talos.dev/versions
+        # https://api.github.com/repos/siderolabs/talos/releases/latest # 有速率限制
+        # https://github.com/siderolabs/talos/releases/latest
+        # https://github.com/siderolabs/talos/releases/latest/download/sha256sum.txt
+
+        latest_tag=$(curl -i https://github.com/siderolabs/talos/releases/latest |
+            grep '^location:' | awk -F/ '{print $NF}' | tr -d '\r' | grep .)
+
+        # 无论是 github 还是 daocloud 都不支持 ipv6
+        local baseurl=https://github.com/siderolabs/talos/releases/download/$latest_tag
+        if is_in_china; then
+            baseurl=$(get_daocloud_url "$baseurl")
+        fi
+
+        set_osvar vmlinuz "$baseurl/vmlinuz-$basearch_alt"
+        set_osvar initrd "$baseurl/initramfs-$basearch_alt.xz"
     }
 
     setos_alpine() {
@@ -2369,6 +2395,7 @@ verify_os_name() {
         'windows' \
         'dd' \
         'netboot.xyz' \
+        'talos' \
         'reset'; do
         read -r ds vers <<<"$os"
         vers_=${vers//\./\\\.}
@@ -2398,18 +2425,6 @@ verify_os_args() {
     dd) [ -n "$img" ] || error_and_exit "dd need --img." ;;
     redhat) [ -n "$img" ] || error_and_exit "redhat need --img." ;;
     windows) [ -n "$image_name" ] || error_and_exit "Install Windows need --image-name." ;;
-    esac
-
-    # 用户名/密码/证书相关
-    case "$distro" in
-    netboot.xyz)
-        [ -z "$username" ] || error_and_exit "not support set username for $distro."
-        [ -z "$password" ] || error_and_exit "not support set password for $distro."
-        [ -z "$ssh_keys" ] || error_and_exit "not support set ssh key for $distro."
-        ;;
-    windows)
-        [ -z "$ssh_keys" ] || error_and_exit "not support set ssh key for $distro."
-        ;;
     esac
 
     # 不能同时使用证书和密码
@@ -2645,7 +2660,7 @@ is_valid_ram_size() {
 check_ram() {
     ram_standard=$(
         case "$distro" in
-        netboot.xyz) echo 0 ;;
+        netboot.xyz | talos) echo 0 ;;
         alpine | debian | kali | dd) echo 256 ;;
         arch | gentoo | aosc | nixos | windows) echo 512 ;;
         redhat | centos | almalinux | rocky | fedora | oracle | ubuntu | anolis | opencloudos | openeuler) echo 1024 ;;
@@ -3798,6 +3813,12 @@ get_entry_name() {
 build_nextos_cmdline() {
     if [ $nextos_distro = alpine ]; then
         nextos_cmdline="alpine_repo=$nextos_repo modloop=$nextos_modloop"
+    elif [ $nextos_distro = talos ]; then
+        # https://docs.siderolabs.com/talos/v1.14/platform-specific-installations/bare-metal-platforms/pxe
+        nextos_cmdline=$(build_ip_cmdline)
+        nextos_cmdline+=" talos.platform=metal"
+        nextos_cmdline+=" slab_nomerge"
+        nextos_cmdline+=" pti=on"
     elif is_distro_like_debian $nextos_distro; then
         # 我们直接强制 di 优先显示到 串口，因此不需要设置分辨率
         # 设置分辨率为800*600，防止分辨率过高 ssh screen attach 后无法全部显示
@@ -3852,7 +3873,9 @@ build_cmdline() {
     fi
 
     # extra
-    build_extra_cmdline
+    if ! [ "$distro" = talos ]; then
+        build_extra_cmdline
+    fi
 
     cmdline="$nextos_cmdline $finalos_cmdline $extra_cmdline"
 }
@@ -4448,6 +4471,46 @@ create_can_use_cloud_kernel_sh() {
         releasever="$releasever"
         can_use_cloud_kernel "\$@"
 EOF
+}
+
+# shellcheck disable=SC2155
+build_ip_cmdline() {
+    collect_netconf >&2
+
+    if is_in_china; then
+        local ipv4_dns1='223.5.5.5'
+        local ipv4_dns2='119.29.29.29'
+        local ipv6_dns1='2400:3200::1'
+        local ipv6_dns2='2402:4e00::'
+    else
+        local ipv4_dns1='1.1.1.1'
+        local ipv4_dns2='8.8.8.8'
+        local ipv6_dns1='2606:4700:4700::1111'
+        local ipv6_dns2='2001:4860:4860::8888'
+    fi
+
+    # https://docs.siderolabs.com/talos/v1.14/reference/kernel#ip
+    # https://www.kernel.org/doc/Documentation/filesystems/nfs/nfsroot.txt
+    # 不从 /etc/resolv.conf 获取 DNS，因为它们可能指向 127.0.0.53，例如 networkd
+
+    # ip=<client-ip>:<server-ip>:<gw-ip>:<netmask>:<hostname>:<device>:<autoconf>:<dns0-ip>:<dns1-ip>:<ntp0-ip>
+    local ip_cmdline=
+    if is_found_ipv4_netconf; then
+        local client_ip=$(echo "$ipv4_addr" | cut -d/ -f1)
+        local netmask=$(echo "$ipv4_addr" | cut -d/ -f2)
+        local device=enx$(echo $ipv4_mac | tr -d ':')
+        ip_cmdline+="ip=$client_ip::$ipv4_gateway:$netmask::$device::$ipv4_dns1:$ipv4_dns2:"
+    fi
+    if is_found_ipv6_netconf; then
+        if [ -n "$ip_cmdline" ]; then
+            ip_cmdline+=" "
+        fi
+        local client_ip=$(echo "$ipv6_addr" | cut -d/ -f1)
+        local netmask=$(echo "$ipv6_addr" | cut -d/ -f2)
+        local device=enx$(echo $ipv6_mac | tr -d ':')
+        ip_cmdline+="ip=[$client_ip]::[$ipv6_gateway]:$netmask::$device::[$ipv6_dns1]:[$ipv6_dns2]:"
+    fi
+    echo "$ip_cmdline"
 }
 
 get_ip_conf_cmd() {
@@ -5065,6 +5128,133 @@ reset_and_exit() {
     fi
 }
 
+get_long_opts_generic() {
+    cat <<EOF
+help
+debug
+force-cn
+commit:
+EOF
+}
+
+get_long_opts_linux() {
+    local distro=$1
+
+    cat <<EOF
+user:|username:
+passwd:|password:
+ssh-key:|public-key:
+ssh-port:
+web-port:|http-port:
+frpc-conf:|frpc-config:
+hold:|sleep:
+target-disk:
+EOF
+
+    cat <<EOF |
+ci                 debian ubuntu centos almalinux rocky fedora redhat oracle anolis opencloudos openeuler opensuse
+img:               debian ubuntu centos almalinux rocky fedora redhat oracle anolis opencloudos openeuler opensuse
+installer          debian ubuntu centos almalinux rocky fedora kali
+no-cloud-kernel    debian ubuntu kali alpine opensuse
+minimal            ubuntu
+root-size:         ubuntu
+boot-size:         ubuntu
+efi-size:          ubuntu
+data-size:         ubuntu
+data-mount:        ubuntu
+EOF
+        if [ -n "$distro" ]; then
+            grep -w "$distro"
+        else
+            cat
+        fi | awk '{print $1}'
+}
+
+get_long_opts_windows() {
+    cat <<EOF
+image-name:
+lang:
+bit:
+iso:
+user:|username:
+passwd:|password:
+rdp-port:
+ssh-port:
+web-port:|http-port:
+allow-ping
+no-lockout|no-lockout-threshold
+add-driver:
+no-auto-drivers
+frpc-conf:|frpc-config:
+hold:|sleep:
+boot-wim:
+target-disk:
+force-boot-mode:
+force-old-windows-setup:
+EOF
+}
+
+get_long_opts_dd() {
+    cat <<EOF
+img:
+user:|username:
+passwd:|password:
+ssh-key:|public-key:
+ssh-port:
+rdp-port:
+web-port:|http-port:
+allow-ping
+no-lockout|no-lockout-threshold
+frpc-conf:|frpc-config:
+cloud-data:
+hold:|sleep:
+target-disk:
+EOF
+}
+
+get_long_opts() {
+    local distro=$1
+
+    local opt opts opts_str
+
+    opts=$({
+        # 通用选项
+        get_long_opts_generic
+
+        # 发行版特定选项
+        case "$distro" in
+        windows)
+            get_long_opts_windows
+            ;;
+        dd)
+            get_long_opts_dd
+            ;;
+        netboot.xyz | talos)
+            ;;
+        '')
+            # 如果未指定发行版，则获取所有
+            get_long_opts_linux
+            get_long_opts_windows
+            get_long_opts_dd
+            ;;
+        *)
+            # 特定 Linux
+            get_long_opts_linux "$distro"
+            ;;
+        esac
+    } | tr '|' '\n' | del_empty_lines | sort -u)
+
+    for opt in $opts; do
+        if [ -z "$opts_str" ]; then
+            opts_str="$opt"
+        else
+            opts_str+=",$opt"
+        fi
+    done
+
+    echo "$opts_str"
+}
+
 # 脚本入口
 
 # windows 环境下的额外初始化
@@ -5122,40 +5312,11 @@ if is_secure_boot_enabled; then
 fi
 
 # 整理参数
-long_opts=
-for o in ci installer debug minimal no-cloud-kernel no-auto-drivers allow-ping force-cn help \
-    no-lockout no-lockout-threshold \
-    add-driver: \
-    hold: sleep: \
-    iso: \
-    image-name: \
-    bit: \
-    boot-wim: \
-    img: \
-    cloud-data: \
-    lang: \
-    user: username: \
-    passwd: password: \
-    ssh-port: \
-    ssh-key: public-key: \
-    rdp-port: \
-    web-port: http-port: \
-    allow-ping: \
-    commit: \
-    frpc-conf: frpc-config: \
-    target-disk: \
-    root-size: boot-size: efi-size: data-size: data-mount: \
-    force-boot-mode: \
-    force-old-windows-setup:; do
-    [ -n "$long_opts" ] && long_opts+=,
-    long_opts+=$o
-done
-
-# 使用 getopt 解析参数
 # Normalize the paired data syntax before getopt permutes positional arguments.
 normalize_partition_args() {
     partition_args=()
-    local option size
+    local long_opts=$1 option size
+    shift
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --) partition_args+=("$@"); break ;;
@@ -5191,20 +5352,36 @@ normalize_partition_args() {
         esac
     done
 }
-normalize_partition_args "$@" || exit 1
+long_opts=$(get_long_opts)
+normalize_partition_args "$long_opts" "$@" || exit 1
 set -- "${partition_args[@]}"
 
-if ! ORIGINAL_OPTS=$(getopt -n $0 -o "h,x" --long "$long_opts" -- "$@"); then
+# 第一遍扫描
+# 验证要安装的系统和版本
+# 并处理通用参数
+if ! OPTS1_STR=$(getopt -n $0 -o "h,x" --long "$long_opts" -- "$@"); then
     exit 1
 fi
 
-# 第一遍扫描，验证要安装的系统和版本
-eval set -- "$ORIGINAL_OPTS"
+eval set -- "$OPTS1_STR"
+OPTS2_ARR=()
 while true; do
     case "$1" in
+    -h | --help)
+        usage_and_exit
+        ;;
     -x | --debug)
         set -x
         shift
+        ;;
+    --force-cn)
+        # 仅为了方便测试
+        force_cn=1
+        shift
+        ;;
+    --commit)
+        commit=$2
+        shift 2
         ;;
     --)
         shift
@@ -5212,6 +5389,7 @@ while true; do
         break
         ;;
     *)
+        OPTS2_ARR+=("$1")
         shift
         ;;
     esac
@@ -5234,22 +5412,19 @@ fi
 # 安装必备组件
 install_pkg curl grep
 
-# 第二遍扫描，处理参数
-eval set -- "$ORIGINAL_OPTS"
+# 第二遍扫描
+# 根据 distro 处理参数
+if ! OPTS2_STR=$(
+    getopt -n $0 -o "h,x" --long "$(get_long_opts "$distro")" -- "${OPTS2_ARR[@]}" \
+        2> >(sed "s/unrecognized option:/invalid option for $distro:/" >&2)
+); then
+    exit 1
+fi
+
+eval set -- "$OPTS2_STR"
 # shellcheck disable=SC2034
 while true; do
     case "$1" in
-    -x | --debug)
-        # 第一遍扫描已处理
-        shift
-        ;;
-    -h | --help)
-        usage_and_exit
-        ;;
-    --commit)
-        commit=$2
-        shift 2
-        ;;
     --ci)
         cloud_image=1
         unset installer
@@ -5278,11 +5453,6 @@ while true; do
         ;;
     --allow-ping)
         allow_ping=1
-        shift
-        ;;
-    --force-cn)
-        # 仅为了方便测试
-        force_cn=1
         shift
         ;;
     --hold | --sleep)
@@ -5573,7 +5743,7 @@ if [ "${custom_partition:-0}" = 1 ]; then
 fi
 
 # 用户名密码
-if ! is_netboot_xyz; then
+if ! { is_netboot_xyz || [ "$distro" = talos ]; }; then
     need_prompt_username=false
     need_prompt_password=false
     if [ -z "$username" ]; then
@@ -5633,7 +5803,7 @@ check_ram
 # el7 x86_64 >=1g
 # el7 aarch64 >=1.5g
 # el8/9/fedora 任何架构 >=2g
-if is_netboot_xyz ||
+if is_netboot_xyz || [ "$distro" = "talos" ] ||
     { ! is_use_cloud_image && {
         [ "$distro" = "alpine" ] || is_distro_like_debian ||
             { is_distro_like_redhat && [ $releasever -eq 7 ] && [ $ram_size -ge 1024 ] && [ $basearch = "x86_64" ]; } ||
@@ -5770,7 +5940,9 @@ if is_need_boot_vmlinuz; then
 
     # 设置 cmdlind initrds
     if ! is_netboot_xyz; then
-        find_main_disk
+        if ! [ "$distro" = talos ]; then
+            find_main_disk
+        fi
         build_cmdline
 
         initrds="$initrd"
@@ -5913,7 +6085,7 @@ ssh_port=${ssh_port:-22}
 rdp_port=${rdp_port:-3389}
 web_port=${web_port:-80}
 
-if [ "$distro" = netboot.xyz ]; then
+if [ "$distro" = netboot.xyz ] || [ "$distro" = talos ]; then
     :
 elif [ "$distro" = alpine ] && [ "$hold" = 1 ]; then
     info "Alpine Live OS"
@@ -5991,6 +6163,15 @@ if [ "$distro" = netboot.xyz ]; then
     warn false "如果要取消进入，请在重启前运行 \"$reinstall_____ reset\"。"
     warn false
     warn false 'Reboot will start netboot.xyz.'
+    warn false "If you want to cancel entering, run \"$reinstall_____ reset\" before reboot."
+    warn false '**********************************'
+
+elif [ "$distro" = talos ]; then
+    warn false '********** 警告 Warning **********'
+    warn false '重启后会进入 Talos 维护模式，任何人都可连接，因此你需要尽快使用 "talosctl" 等工具连接并初始化系统'
+    warn false "如果要取消进入，请在重启前运行 \"$reinstall_____ reset\"。"
+    warn false
+    warn false 'Reboot will start Talos Maintenance Mode. Anyone can connect. So you need to connect and initialize the system using tools like "talosctl" as soon as possible.'
     warn false "If you want to cancel entering, run \"$reinstall_____ reset\" before reboot."
     warn false '**********************************'
 
