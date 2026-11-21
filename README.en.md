@@ -74,9 +74,6 @@ Custom layouts do not support other OS versions, ARM, Windows entry points, ISO 
 
 See the [Chinese README](README.md), [partition and maintenance guide](CUSTOM-PARTITIONS.md), [validation scope](VPS-VALIDATION.md), and [upstream documentation](https://github.com/bin456789/reinstall#readme).
 
-## Upstream synchronization
+## Upstream updates
 
-The daily workflow checks upstream at 01:23 UTC. A merged candidate must pass offline checks,
-loop-image tests and complete BIOS/UEFI QEMU reinstall/boot tests before main is advanced.
-Conflicts, failures or concurrent main changes stop publication and create/update an assigned GitHub Issue.
-Tests use GitHub-hosted runners, with no server credentials. Manual verification is available in Actions.
+Maintainers merge upstream changes on a candidate branch and update `main` after regression checks and full BIOS and UEFI reinstall and boot tests pass.
